@@ -17,6 +17,13 @@ Resolution priority for the default command timeout in seconds:
     2. timeout_seconds in the config file
     3. DEFAULT_TIMEOUT_SECONDS
 
+Audit log location (see audit.py), first match wins:
+    1. DIAMOND_MCP_AUDIT_LOG environment variable
+    2. audit_log in the config file
+    3. <state dir>/diamond-mcp/audit.log, where <state dir> is $XDG_STATE_HOME or
+       ~/.local/state (Linux) and %LOCALAPPDATA% (Windows)
+    A value of "off", "none", "false", "0" or an empty string disables the log.
+
 Config file search order:
     1. DIAMOND_MCP_CONFIG environment variable (explicit path)
     2. ./diamond-mcp.json in the current working directory
@@ -27,7 +34,8 @@ Config file schema (JSON, every field optional):
     {
         "diamond_exe": "/tools/dist/lattice/DIAMOND/3.14.0.75.0/diamond/sub/bin/lin64/diamondc",
         "lm_license_file": "1234@license-server",
-        "timeout_seconds": 3600
+        "timeout_seconds": 3600,
+        "audit_log": "/var/log/diamond-mcp/audit.log"
     }
 
     "diamond_install_dir" may be given instead of "diamond_exe"; the console
@@ -137,6 +145,41 @@ def resolve_lm_license_file() -> Optional[str]:
     return str(value) if value else None
 
 
+_AUDIT_OFF_VALUES = {"", "off", "none", "false", "0", "disabled"}
+
+
+@dataclass(frozen=True)
+class ResolvedAuditLog:
+    """Where the audit log is written; path is None when logging is disabled."""
+
+    path: Optional[str]
+    source: str  # "env" | "config:<file>" | "default" | "disabled-by-env" | "disabled-by-config"
+
+
+def _default_audit_log_path() -> Path:
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / USER_CONFIG_DIR / "audit.log"
+    state = os.environ.get("XDG_STATE_HOME", "").strip() or str(Path.home() / ".local" / "state")
+    return Path(state) / USER_CONFIG_DIR / "audit.log"
+
+
+def resolve_audit_log_path() -> ResolvedAuditLog:
+    if "DIAMOND_MCP_AUDIT_LOG" in os.environ:
+        value = os.environ["DIAMOND_MCP_AUDIT_LOG"].strip()
+        if value.lower() in _AUDIT_OFF_VALUES:
+            return ResolvedAuditLog(None, "disabled-by-env")
+        return ResolvedAuditLog(value, "env")
+    config_file = find_config_file()
+    data = load_config_data(config_file)
+    if "audit_log" in data:
+        value = data["audit_log"]
+        if value is False or str(value).strip().lower() in _AUDIT_OFF_VALUES:
+            return ResolvedAuditLog(None, "disabled-by-config")
+        return ResolvedAuditLog(str(value), f"config:{config_file}")
+    return ResolvedAuditLog(str(_default_audit_log_path()), "default")
+
+
 def resolve_timeout() -> float:
     env_value = os.environ.get("DIAMOND_MCP_TIMEOUT", "").strip()
     for candidate in (env_value, load_config_data().get("timeout_seconds")):
@@ -183,6 +226,7 @@ def save_config(
 def get_config_info() -> dict:
     resolved = resolve_diamond_path()
     license_value = resolve_lm_license_file()
+    audit = resolve_audit_log_path()
     config_file = find_config_file()
     return {
         "diamond_exe": resolved.path,
@@ -190,6 +234,8 @@ def get_config_info() -> dict:
         "diamond_exe_exists": resolved.exists,
         "lm_license_file_set": license_value is not None,
         "timeout_seconds": resolve_timeout(),
+        "audit_log": audit.path,
+        "audit_log_source": audit.source,
         "config_file": str(config_file) if config_file else None,
         "config_search_paths": [str(p) for p in config_search_paths()],
     }

@@ -17,7 +17,13 @@ SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 
 def _params(fake_exe: str, tmp_path: Path) -> StdioServerParameters:
-    env = {**os.environ, "DIAMOND_EXE": fake_exe, "PYTHONPATH": SRC, "DIAMOND_MCP_CONFIG": str(tmp_path / "none.json")}
+    env = {
+        **os.environ,
+        "DIAMOND_EXE": fake_exe,
+        "PYTHONPATH": SRC,
+        "DIAMOND_MCP_CONFIG": str(tmp_path / "none.json"),
+        "DIAMOND_MCP_AUDIT_LOG": str(tmp_path / "stdio-audit.log"),
+    }
     return StdioServerParameters(command=sys.executable, args=["-m", "diamond_mcp"], env=env)
 
 
@@ -46,3 +52,26 @@ def test_server_lists_tools_and_runs_a_flow_over_stdio(fake_exe, ldf_project, tm
                 assert status["is_running"]
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=120))
+
+
+def test_stdio_server_writes_an_audit_log(fake_exe, ldf_project, tmp_path):
+    async def scenario():
+        async with stdio_client(_params(fake_exe, tmp_path)) as (read, write):
+            async with ClientSession(read, write) as client:
+                await client.initialize()
+                await client.call_tool("run_tcl", {"command": "exec echo audited"})
+                await client.call_tool("run_tcl", {"command": "prj_project close"})
+                await client.call_tool("compile_project", {"project_path": str(ldf_project)})
+                await client.call_tool("stop_diamond", {})
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=120))
+    entries = [json.loads(line) for line in (tmp_path / "stdio-audit.log").read_text().splitlines()]
+    by_event = {}
+    for entry in entries:
+        by_event.setdefault(entry["event"], []).append(entry)
+    assert by_event["session_start"] and by_event["session_end"]
+    commands = by_event["command"]
+    assert commands[0]["command"] == "exec echo audited" and commands[0]["tool"] == "run_tcl"
+    assert any(c["tool"] == "compile_project" and "prj_run PAR" in c["command"] for c in commands)
+    assert by_event["refused"][0]["command"] == "prj_project close"
+    assert all(e["user"] and e["pid"] for e in entries)

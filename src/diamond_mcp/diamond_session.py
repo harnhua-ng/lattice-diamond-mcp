@@ -53,6 +53,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from .audit import AuditLog, current_tool
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_COMMAND_TIMEOUT_S = 3600.0
@@ -162,7 +164,9 @@ class DiamondSession:
         timeout: float = DEFAULT_COMMAND_TIMEOUT_S,
         lm_license_file: Optional[str] = None,
         start_timeout: float = DEFAULT_START_TIMEOUT_S,
+        audit: Optional[AuditLog] = None,
     ):
+        self.audit = audit
         self.diamond_exe = diamond_exe
         self.timeout = float(timeout)
         self.lm_license_file = lm_license_file
@@ -188,10 +192,15 @@ class DiamondSession:
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
 
+    def _audit(self, event: str, **fields) -> None:
+        if self.audit is not None:
+            self.audit.record(event, **fields)
+
     def _record_down(self, reason: str) -> None:
         self.last_exit = reason
         self.current_project = None
         logger.error("Diamond session down: %s", reason)
+        self._audit("session_end", reason=reason)
 
     # ---------------------------------------------------------------- process
 
@@ -346,6 +355,12 @@ class DiamondSession:
         self.epoch += 1
         self.last_exit = None
         self._session_start = datetime.now().isoformat()
+        self._audit(
+            "session_start",
+            exe=self.diamond_exe,
+            version=self.diamond_version,
+            console_pid=self.process.pid,
+        )
         elapsed = (time.monotonic() - started) * 1000
         return CommandResult(
             "start",
@@ -373,6 +388,7 @@ class DiamondSession:
             if self.process is not None:
                 self._kill()
                 self.process = None
+                self._audit("session_end", reason="restart")
             self.current_project = None
             self.last_exit = None
             self._cleanup_workdir()
@@ -400,6 +416,7 @@ class DiamondSession:
             self.process = None
             self.current_project = None
             self._cleanup_workdir()
+            self._audit("session_end", reason="stopped")
             return CommandResult("stop", message, True, (time.monotonic() - started) * 1000)
 
     # --------------------------------------------------------------- commands
@@ -451,6 +468,7 @@ class DiamondSession:
         result_lines: list[str] = []
         tcl_code: Optional[int] = None
         failure: Optional[str] = None
+        self._audit("command", id=cmd_id, tool=current_tool.get(), command=command)
         try:
             self._send(wrapper)
             before, _ = self._wait_for(begin, limit, "the command to finish")
@@ -491,6 +509,14 @@ class DiamondSession:
         elapsed_ms = (time.monotonic() - started) * 1000
         self._stats["commands_run"] += 1
         self._stats["total_ms"] += elapsed_ms
+        self._audit(
+            "result",
+            id=cmd_id,
+            success=failure is None and tcl_code == 0,
+            tcl_code=tcl_code,
+            elapsed_ms=round(elapsed_ms, 1),
+            failure=failure,
+        )
 
         # Lines up to the result marker belong to the console log; collect any
         # that were recorded before a failure for context.
@@ -536,6 +562,7 @@ class DiamondSession:
             "errors": self._stats["errors"],
             "avg_command_time_ms": round(self._stats["total_ms"] / commands, 1) if commands else 0.0,
             "timeout_seconds": self.timeout,
+            "audit_log": self.audit.path if self.audit is not None and not self.audit.disabled else None,
         }
         if log_lines > 0:
             stats["console_log_tail"] = list(self._log)[-log_lines:]
@@ -548,10 +575,17 @@ def make_session(
     lm_license_file: Optional[str] = None,
 ) -> DiamondSession:
     """Build a session from explicit values, falling back to the resolved configuration."""
-    from .config import resolve_diamond_path, resolve_lm_license_file, resolve_timeout
+    from .config import (
+        resolve_audit_log_path,
+        resolve_diamond_path,
+        resolve_lm_license_file,
+        resolve_timeout,
+    )
 
+    audit_path = resolve_audit_log_path().path
     return DiamondSession(
         diamond_exe=diamond_exe or resolve_diamond_path().path,
         timeout=timeout or resolve_timeout(),
         lm_license_file=lm_license_file or resolve_lm_license_file(),
+        audit=AuditLog(audit_path) if audit_path else None,
     )

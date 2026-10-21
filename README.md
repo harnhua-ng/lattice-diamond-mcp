@@ -30,7 +30,8 @@ src/diamond_mcp/
     __main__.py          python -m diamond_mcp
     server.py            FastMCP tool definitions (32 tools) and the entry point
     diamond_session.py   persistent Tcl console: protocol, timeouts, crash handling
-    config.py            executable, license and timeout resolution; config file
+    config.py            executable, license, timeout and audit-log resolution; config file
+    audit.py             command audit log (JSON lines, rotated, owner-only)
     discovery.py         finds Diamond installations on disk
     project.py           reads .ldf files; checks for missing sources; locates reports
     reports.py           parsers for .par, .twr and .mrp reports
@@ -124,6 +125,22 @@ session down and clears the open-project record. The server restarts the console
 next tool call and tells the caller (`session_note`) that the project must be reopened.
 Process-group kill is used so Diamond's child engines do not linger.
 
+### Audit log
+
+`audit.py` writes one JSON object per line for session events and for every command the
+session sends to Diamond. `DiamondSession.run_tcl` is the single choke point, so every
+tool is covered. A `command` record is written before the command is sent and a `result`
+record after it, so a command that hangs or crashes Diamond is still on record. The `_tool`
+decorator stores the MCP tool name in a context variable (`audit.current_tool`) so records
+say which tool issued each command, including commands issued by a tool on behalf of
+another. Writing never raises: if the file cannot be written, the log disables itself with
+one warning. The location comes from `DIAMOND_MCP_AUDIT_LOG` or `audit_log` in the config
+file (see `config.resolve_audit_log_path`). The log is detective only and the account that
+runs the server can alter it; the user guide explains the limits.
+
+`tests/conftest.py` redirects the log into a temporary directory for every test, so the
+suite never writes to a real home directory.
+
 ### Tool layer
 
 `server.py` registers each tool through the `_tool` decorator. Tools are plain
@@ -161,6 +178,8 @@ These were found by running real Diamond and are encoded in the code and tests.
 - **`prj_run Export` does not write a bitstream** with default strategy settings. It
   returns success and produces nothing. `generate_bitstream` runs
   `prj_run Export -task Bitgen` and then checks that a `.bit` file was written.
+- **`run_tcl` refuses commands containing `prj_project close`** (`_CLOSE_COMMAND_RE` in
+  `server.py`), so the one remaining route to the crash is closed.
 - **Failures are in the return code, details are in the log.** A failed `prj_run`
   returns only `Running milestone "Synthesis" failed`. The cause (an expired tool, a
   missing file) is in the console output, which the server returns as `output` and
@@ -251,9 +270,16 @@ reasons unrelated to the server. No Diamond 3.15 installation was available for 
 
 These exist in the sibling Radiant server and have not been built here:
 
+- Preventive controls for `run_tcl` (an allowlist or a mode that disables it). The user guide
+  describes sandboxing and the audit log instead; software checks inside the server cannot
+  be made airtight.
 - Remote execution (SSH, LSF `bsub`) and background compilation jobs. Flows run on the
   host that runs the server; long flows hold the tool call until they finish or time out.
-- RTL simulation.
+- Running a simulator. The server can generate post-Map and post-PAR simulation netlists
+  (`run_flow` with the tasks listed in the user guide), but Diamond's Tcl console has no
+  command that runs a simulation. A tool would have to launch the bundled QuestaSim (or
+  another simulator) directly, as the Radiant server does; this needs a design for library
+  compilation (`cmpl_libs`), testbench handling and licensing.
 - Documentation search. Use the `radiant-code-kb` server for knowledge-base queries.
 - Listing available strategy options (`prj_strgy list_value` and `list_option`): neither
   returned results for the patterns tried. Read and write individual options with

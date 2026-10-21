@@ -15,6 +15,7 @@ results of any flow, in particular timing and utilisation figures, before relyin
 ## Contents
 
 - [Overview](#overview)
+- [Understanding the Diamond flow](#understanding-the-diamond-flow)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Configure Diamond's location and license](#configure-diamonds-location-and-license)
@@ -23,6 +24,8 @@ results of any flow, in particular timing and utilisation figures, before relyin
 - [Using the server](#using-the-server)
 - [Tools reference](#tools-reference)
 - [Behaviour you should know about](#behaviour-you-should-know-about)
+- [Command audit log](#command-audit-log)
+- [Deploying in a restricted environment](#deploying-in-a-restricted-environment)
 - [Troubleshooting](#troubleshooting)
 - [Configuration reference](#configuration-reference)
 - [Tcl commands used](#tcl-commands-used)
@@ -46,6 +49,163 @@ With it, an assistant can:
 The server checks a project before the flow starts. In particular it detects source
 files that are missing or that differ from the project's reference only by letter case,
 which is a common problem when a project written on Windows is compiled on Linux.
+
+## Understanding the Diamond flow
+
+This section is for readers who are new to FPGA design tools. It explains what Diamond
+does, what each stage produces, and which parts of that the MCP server can drive.
+
+### What Diamond does
+
+An FPGA is a chip whose logic can be reprogrammed. You describe the logic you want in a
+hardware description language (Verilog or VHDL). Diamond turns that description into a
+file that configures a specific FPGA part. It does this in stages, and each stage reads
+the result of the previous one.
+
+Three kinds of input define a project:
+
+- **Design sources**: your Verilog or VHDL files (and sometimes ready-made netlists).
+- **Constraints**: a logic preference file (`.lpf`) that tells Diamond your goals, most
+  importantly the clock speeds the design must reach, and which chip pin each signal uses.
+  Without timing constraints Diamond has no speed target, so "timing met" means little.
+- **Settings**: the target device (a part name such as `LCMXO3LF-6900C-5BG256C`), the
+  synthesis tool, and a *strategy* (a named set of tool options).
+
+All three are recorded in the project file (`.ldf`). Diamond keeps its results for each
+*implementation* of the project in a folder named after the implementation, next to the
+project file.
+
+### The stages
+
+```
+  HDL sources      Constraints (.lpf)      Strategy (.sty)
+       \                  |                     /
+        +----------  Project file (.ldf)  ----+
+                          |
+                          v
+   Synthesis --> Translate --> Map --> Place & Route --> Export
+   (netlist)     (database)   (fit to   (placement,      (bitstream,
+                               chip)     wiring, timing)  simulation files)
+```
+
+| Stage | What it means | Main results | Server tools |
+|---|---|---|---|
+| Synthesis | Converts your HDL into a netlist of basic logic: gates, registers, memories. Done by Synplify Pro, the Lattice Synthesis Engine (LSE) or Precision, as the project selects. | Netlist, synthesis log (`.srr`, `.srf`) | `run_synthesis` |
+| Translate | Merges the netlist with the device library and your constraints into Diamond's internal design database. | `.ngd` | `run_translate` |
+| Map | Fits the logic onto the chip's real building blocks: lookup tables (LUT4s), registers, block RAM, I/O. | Utilisation report (`.mrp`) | `run_map`, `get_resource_usage` |
+| Place and Route (PAR) | Decides where each block sits on the chip and how wires connect them, then measures the speed that results. | Placed design (`.ncd`), PAR report (`.par`), timing report (`.twr`), pin report (`.pad`) | `run_par`, `get_timing_summary` |
+| Timing analysis | Checks every path against your constraints. | `.twr` | `run_timing_analysis`, `get_timing_summary` |
+| Export | Writes the files you use outside Diamond: the bitstream that configures the chip, simulation netlists, and similar. | `.bit`, `.jed`, `.vo`, `.vho`, `.sdf` | `generate_bitstream`, `run_flow` |
+
+`compile_project` runs Synthesis, Translate, Map, PAR and the bitstream in order and stops
+at the first failure. Diamond skips stages whose inputs have not changed, which is why a
+repeated run can finish almost at once. Use `force` to rerun.
+
+### Reading the results
+
+- **Timing errors**: the number of paths that are too slow for your constraints. Zero
+  means every constraint was met. The worst slack is the margin on the worst path; a
+  negative value means that path misses its target by that many nanoseconds.
+- **Setup and hold**: setup errors mean a signal arrives too late; hold errors mean it
+  changes too early. Setup problems are the common case when a clock target is too fast.
+- **Preferences met**: whether each constraint was met, with its target and the value
+  actually achieved (for example a 200 MHz target that reached 150 MHz).
+- **Utilisation**: how much of the chip the design uses. A design that uses most of a
+  resource is likely to have difficulty meeting timing.
+- **PAR success is not timing success.** PAR succeeds when everything is routed. Whether
+  timing is met is a separate question, answered by the timing summary.
+
+### File types you will meet
+
+| Extension | Meaning |
+|---|---|
+| `.ldf` | Diamond project file |
+| `.lpf` | Constraints: clocks, pin locations, timing goals |
+| `.sty` | Strategy: tool option settings |
+| `.srr`, `.srf` | Synthesis report and log |
+| `.ngd` | Translated design database |
+| `.mrp` | Map report: resource utilisation |
+| `.ncd` | Placed and routed design |
+| `.par` | Place and route report |
+| `.twr` | Timing report |
+| `.pad` | Pin assignment report |
+| `.bit` | Bitstream that configures the chip |
+| `.jed` | JEDEC programming file, for devices that use one |
+| `.vo`, `.vho`, `.sdf` | Simulation netlists (Verilog, VHDL) and their timing delays |
+| `.ibs` | IBIS model of the chip's I/O |
+
+### Simulation
+
+Simulation checks that a design behaves correctly by running it in software, before or
+instead of using real hardware. It comes in two kinds:
+
+- **Functional (RTL) simulation** runs your HDL source with a testbench. It checks the
+  logic, not the speed.
+- **Timing simulation** runs the netlist that Diamond writes after Map or PAR, together
+  with an `.sdf` file of the real delays. It checks behaviour including timing.
+
+**Does Diamond support simulation?** Yes. Diamond's documentation covers simulating Lattice
+designs with ModelSim and QuestaSim, Aldec Riviera-PRO and Active-HDL, Cadence NC, and
+Synopsys VCS, and the Diamond GUI includes a Simulation Wizard. Simulating a Lattice design
+needs the compiled Lattice device and PMI simulation libraries, which Diamond includes or
+which can be built with the `cmpl_libs` script that Diamond provides. The Diamond
+installation used for testing contains QuestaSim programs and these libraries. Whether you
+may run them depends on your license, which was not checked.
+
+**What the server does for simulation:** it can generate the simulation netlists, which
+the GUI would otherwise produce. These tasks were run and checked on Diamond 3.14.0.75.0:
+
+| Netlist | Call |
+|---|---|
+| Verilog, after Map (with `.sdf` timing) | `run_flow` with milestone `Map`, task `MapVerilogSimFile` |
+| Verilog, after PAR (with `.sdf` timing) | `run_flow` with milestone `Export`, task `TimingSimFileVlg` |
+| VHDL, after PAR (with `.sdf` timing) | `run_flow` with milestone `Export`, task `TimingSimFileVHD` |
+
+**What the server does not do:** it does not run a simulator, start the Simulation
+Wizard, compile the simulation libraries, or write testbenches. No Diamond Tcl command that
+runs a simulation was found in the console (only the netlist tasks above), so a simulator
+has to be launched separately, for example from its own command line. Running a simulator
+from the server is a candidate for a later release.
+
+### What the server can do
+
+- Start Diamond and keep it running, so projects stay open between requests.
+- Open, create and save projects; read a project's device, sources and strategy.
+- Check a project before running it, and report missing source files, including files
+  whose names differ only by letter case.
+- Change the target device, synthesis tool, source list and strategy options.
+- Run each stage, or the whole flow, and report the outcome of each stage.
+- Read back timing and utilisation as structured data, and read any report or log file.
+- Generate a bitstream and confirm that the file was written.
+- Generate the simulation netlists listed above, and a few other export files. These
+  tasks were verified to run: `PARTrace` and `IOTiming` (under `PAR`), `MapTrace` (under
+  `Map`), and `Jedecgen` and `IBIS` (under `Export`). Which tasks apply depends on the
+  device and settings; Diamond answers "not a valid task name" for those that do not.
+- Run any other Diamond Tcl command through `run_tcl`.
+- Detect that Diamond crashed or hung, say why, and recover on the next request.
+
+### What the server cannot do
+
+- **Run a simulation**, as described above.
+- **Program a device.** The server produces the bitstream or JEDEC file. Loading it into a
+  chip needs Diamond Programmer and a cable, which are outside this server.
+- **Use Diamond's graphical tools**: the Simulation Wizard, Reveal (on-chip logic
+  analyzer), the spreadsheet and floorplan views, IP Express and Clarity Designer. The
+  Diamond Tcl console does list commands for some of these areas (for example `rvl_*` and
+  `rva_*` for Reveal, `pwc_*` for the power calculator, `eco_*` for engineering changes),
+  and they can be tried through `run_tcl`, but the server has no tools for them and they
+  have not been tested.
+- **Edit your HDL or constraint files.** The server registers files with a project but
+  does not write them. The AI assistant edits files with its own file tools, and then asks
+  the server to run the flow again. Use `force` if a rerun does not pick up a change.
+- **Decide your constraints.** It reports whether constraints were met. Choosing realistic
+  clocks and pin assignments is an engineering decision.
+- **Guarantee a correct or working design.** It runs Diamond's tools and reports what
+  they say. A successful compile means the tools finished, not that the design is right.
+- **Run on another machine or in a queue.** Flows run on the machine that runs the
+  server. There is no remote execution, and no background jobs.
+- **Work on more than one project at once.** There is one Diamond session and one open
+  project.
 
 ## Requirements
 
@@ -278,6 +438,13 @@ Optional parameters are shown in square brackets.
 `force` is `none` (default), `one` (rerun this stage) or `all` (rerun all stages).
 Stages that are already up to date are not rerun unless forced.
 
+Tasks that `run_flow` has been verified to run on Diamond 3.14.0.75.0 (milestone, then
+task): `PAR` with `PARTrace` or `IOTiming`; `Map` with `MapTrace` or `MapVerilogSimFile`;
+`Export` with `Bitgen`, `Jedecgen`, `IBIS`, `TimingSimFileVlg` or `TimingSimFileVHD`.
+Other tasks named in Diamond's flow definition (for example `SSO`, `MapEqu`, `PowerCal`,
+`Promgen`) were rejected as "not a valid task name" for the test project; they may apply
+to other devices or settings.
+
 `timeout` is in seconds. The default is one hour (`timeout_seconds` in the config).
 
 ### Reports
@@ -300,7 +467,7 @@ in picoseconds (`*_ps` keys).
 
 | Tool | Parameters | Purpose |
 |---|---|---|
-| `run_tcl` | command, [timeout] | Run any Tcl in the live console. Multi-line scripts work. Prefer the dedicated tools. |
+| `run_tcl` | command, [timeout] | Run any Tcl in the live console. Multi-line scripts work. Prefer the dedicated tools. Commands containing `prj_project close` are refused (see below). |
 
 ## Behaviour you should know about
 
@@ -309,6 +476,10 @@ in picoseconds (`*_ps` keys).
   already open, restart the console instead. This takes a few seconds, discards unsaved
   changes, and clears any Tcl variables you set with `run_tcl`. Call `save_project`
   first if you changed the project.
+- **`run_tcl` refuses `prj_project close`.** If a command or script sent through `run_tcl`
+  contains it, the call is rejected with a pointer to `close_project`. The check is a
+  text match, so it is a safeguard and not a guarantee, and it can reject a harmless
+  string that happens to contain the command.
 - **Only one project is open at a time.** The console is a single session shared by all
   tools.
 - **Calls are serialised.** If a long flow is running, other tool calls wait for it.
@@ -324,6 +495,173 @@ in picoseconds (`*_ps` keys).
 - **Success means Diamond returned success.** For flows that promise a file (a bitstream)
   the server checks the file. Always read `warnings` as well, because Diamond can succeed
   with warnings worth reviewing.
+
+## Command audit log
+
+The server writes a record of everything it sends to Diamond, so a reviewer can later see
+what ran, when, on which account, and with what result.
+
+### What is recorded
+
+Each line of the log is one JSON object. Every record has `ts` (UTC time), `event`,
+`session`, `pid` (the server process), and `user` (the operating-system account).
+
+| Event | Meaning | Extra fields |
+|---|---|---|
+| `session_start` | The Diamond console started | `exe`, `version`, `console_pid` |
+| `session_end` | The console stopped, was restarted, timed out, or died | `reason` |
+| `command` | A command is about to be sent to Diamond | `id`, `command` (full text), `tool` |
+| `result` | That command finished | `id`, `success`, `tcl_code`, `elapsed_ms`, `failure` |
+| `refused` | A command was rejected before reaching Diamond | `command`, `tool`, `reason` |
+
+- A `command` record is written **before** the command runs, so a command that hangs or
+  crashes Diamond is still on record. It shares its `id` with its `result`.
+- `tool` names the MCP tool that issued the command (for example `compile_project` or
+  `run_tcl`). Commands sent by one tool on behalf of another are attributed to the tool
+  that was called. It is absent when the caller is unknown.
+- Commands longer than 20000 characters are truncated and marked `command_truncated`.
+- The log holds the command text, not Diamond's output.
+
+Example, with the account and process numbers replaced:
+
+```json
+{"ts": "2026-10-21T00:54:02.311+00:00", "event": "command", "session": "9f3c1a2e", "pid": 4120, "user": "<account>", "id": "641632c2", "tool": "run_tcl", "command": "exec echo audited-exec"}
+{"ts": "2026-10-21T00:54:02.315+00:00", "event": "result", "session": "9f3c1a2e", "pid": 4120, "user": "<account>", "id": "641632c2", "success": true, "tcl_code": 0, "elapsed_ms": 4.1}
+{"ts": "2026-10-21T00:54:02.402+00:00", "event": "refused", "session": "9f3c1a2e", "pid": 4120, "user": "<account>", "reason": "prj_project close", "command": "prj_project close"}
+```
+
+### Where it is written
+
+| Setting | Effect |
+|---|---|
+| (default) | `~/.local/state/diamond-mcp/audit.log` on Linux (`$XDG_STATE_HOME` is honoured); `%LOCALAPPDATA%\diamond-mcp\audit.log` on Windows |
+| `DIAMOND_MCP_AUDIT_LOG=<path>` | Write to this file |
+| `"audit_log": "<path>"` in the config file | Same, when the environment variable is not set |
+| `off`, `none`, `false`, `0` or empty | Disable logging |
+
+The environment variable takes priority over the config file. `get_session_status` shows
+the active path in `audit_log`, and `check_environment` warns when logging is disabled or
+the location cannot be written.
+
+The file and its directory are created readable only by their owner. The log rotates at
+10 MB and keeps five older files (about 60 MB in total). If the file cannot be written, a
+warning is printed once and the server keeps working without auditing.
+
+### Reading the log
+
+```bash
+# Every command, with the tool that sent it
+jq -r 'select(.event=="command") | [.ts, (.tool // "-"), .command] | @tsv' audit.log
+
+# Commands that failed (join with the command records by id)
+jq -r 'select(.event=="result" and .success==false) | .id' audit.log
+
+# Console crashes, timeouts and restarts
+jq -r 'select(.event=="session_end") | [.ts, .reason] | @tsv' audit.log
+```
+
+### Handling and limits
+
+- **Treat the log as sensitive.** It contains the account name and the full text of every
+  command, which includes file paths and anything an assistant typed into `run_tcl`.
+- **It records what the server sent to Diamond, not what happened afterwards.** For
+  example, `exec echo hello` is recorded as that command, but the log does not show what
+  other programs a script started or what they did.
+- **It does not cover use outside the server.** Someone who runs Diamond directly is not
+  logged.
+- **It is a detective control, not a preventive one.** Logging does not stop a command.
+- **It is not tamper-proof.** The account that runs the server owns the log and the
+  settings, so that account can edit or delete the file, or switch logging off. For a
+  record that the user cannot alter, send it to a central log collector or to a location
+  that the account can append to but not modify, and set the location in a launcher that
+  the user cannot change. Your administrator decides how.
+
+## Deploying in a restricted environment
+
+The server and Diamond run with the privileges of the account that starts them, and
+`run_tcl` can start any program that account can run. Software checks inside the server
+cannot make that perfectly safe: Tcl offers several routes to run programs, and Diamond
+itself can run user scripts named in project options. The reliable control is to limit
+what the account can reach, so that a misused command can do little harm.
+
+### What a sandbox can and cannot do
+
+Tested on Linux with Diamond 3.14.0.75.0 and bubblewrap (`bwrap`), with the server started
+by an MCP client over stdio:
+
+- **Works:** a full compile including the bitstream; writes outside the project folder
+  are refused; the home directory can be hidden; other processes are not visible; the
+  audit log is still written.
+- **Does not limit the network.** Everything reachable over the network stays reachable,
+  so a command that can read a file could also send it elsewhere. Limiting network access
+  must be done with firewall or egress rules set by your administrator.
+- **Cutting the network off breaks Diamond.** On the test host, a sandbox with no network
+  made the console exit at start-up (a directory-service lookup failed). Diamond may also
+  need a license server. Allow only what your site needs, for example the license server
+  and directory services.
+- **Everything not hidden stays readable.** A read-only view of the root file system still
+  lets the account read other files it has access to, including its own home directory.
+  In the test, a home directory listing showed files that looked like credentials, which
+  is why the example below hides it.
+
+### Example (bubblewrap)
+
+Create the project and log directories first, because a read-only root cannot create them.
+Replace the paths with yours.
+
+```bash
+PROJECT=/work/my_design               # the only place flows may write results
+STATE=/var/tmp/diamond-mcp-state      # audit log location
+
+bwrap \
+  --ro-bind / / --dev /dev --proc /proc \
+  --tmpfs /tmp \
+  --tmpfs "$HOME" \
+  --ro-bind "$HOME/.flexlmrc" "$HOME/.flexlmrc" \
+  --ro-bind "$HOME/diamond-mcp-venv" "$HOME/diamond-mcp-venv" \
+  --bind "$PROJECT" "$PROJECT" \
+  --bind "$STATE" "$STATE" \
+  --setenv DIAMOND_MCP_AUDIT_LOG "$STATE/audit.log" \
+  --unshare-pid --unshare-ipc --unshare-uts --die-with-parent --new-session \
+  "$HOME/diamond-mcp-venv/bin/diamond-mcp"
+```
+
+What each part does:
+
+- `--ro-bind / /` makes the whole file system read-only, including the Diamond installation.
+- `--tmpfs /tmp` gives a private, writable `/tmp`. Tcl's `exec` needs one; without it every
+  `exec` fails, and the sandbox is not testing what you intend.
+- `--tmpfs "$HOME"` hides the real home directory. Bind back only what is needed: the
+  server's own environment, and any license settings. At the test site Diamond reads its
+  license from `~/.flexlmrc`, and without that file the console refused to start with
+  "License checkout failed". Remove that line if your site does not use it, and add other
+  files your site needs.
+- `--bind "$PROJECT" "$PROJECT"` and `--bind "$STATE" "$STATE"` are the only writable
+  locations, apart from the private `/tmp`.
+- `--unshare-pid` and the other `--unshare` options isolate processes and IPC. Do not add
+  `--unshare-net` unless you have confirmed that Diamond works without the network at your
+  site.
+
+To use it from Claude Code, register the whole command:
+
+```bash
+claude mcp add --scope user diamond -- bwrap <options as above> "$HOME/diamond-mcp-venv/bin/diamond-mcp"
+```
+
+Anything written to the private `/tmp` or the hidden home disappears when the sandbox ends.
+
+### Other measures
+
+These were not tested here, and are listed for your administrator to consider:
+
+- Run the server as a dedicated low-privilege account that has no access to other users'
+  files or to credentials.
+- Use a container runtime (for example Podman) or a systemd unit with file system
+  protection options instead of `bwrap`.
+- Install the server as a read-only, root-owned package so that users cannot change it.
+- Forward the audit log to a central collector.
+- Apply network egress rules that allow only the license server and the services your site
+  requires.
 
 ## Troubleshooting
 
@@ -356,6 +694,7 @@ include the `console_log_tail` and `last_exit` in your report.
 | `DIAMOND_MCP_TIMEOUT` | Default command timeout in seconds. |
 | `DIAMOND_MCP_CONFIG` | Path to a config file. |
 | `DIAMOND_SEARCH_ROOTS` | Extra directories to search for installations. |
+| `DIAMOND_MCP_AUDIT_LOG` | Audit log file, or `off` to disable. See "Command audit log". |
 
 ### Config file fields
 
@@ -365,6 +704,7 @@ include the `console_log_tail` and `last_exit` in your report.
 | `diamond_install_dir` | Installation directory; the executable is located inside it. |
 | `lm_license_file` | License value. |
 | `timeout_seconds` | Default command timeout. |
+| `audit_log` | Audit log file, or `"off"` to disable. |
 
 Config file search order: `DIAMOND_MCP_CONFIG`, then `diamond-mcp.json` in the working
 directory, then `~/.config/diamond-mcp/config.json` (`%APPDATA%\diamond-mcp\config.json`

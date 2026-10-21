@@ -49,8 +49,10 @@ from mcp.server.fastmcp import FastMCP
 
 from . import project as prj
 from . import reports
+from .audit import current_tool
 from .config import (
     get_config_info,
+    resolve_audit_log_path,
     resolve_diamond_path,
     resolve_lm_license_file,
     save_config,
@@ -67,6 +69,8 @@ _READABLE_REPORT_SUFFIXES = (
     ".prf", ".lpf", ".sdc", ".tcl", ".ldf",
 )
 _NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# Best-effort match for a prj_project close command anywhere in a script.
+_CLOSE_COMMAND_RE = re.compile(r"(?:^|[;\s\[{])prj_project\s+close\b")
 _SYNTHESIS_TOOLS = ("lse", "synplify", "precision")
 
 # Flow stages run in order by compile_project.
@@ -167,11 +171,14 @@ def _tool(fn):
 
     @functools.wraps(fn)
     async def _async_tool(*args, **kwargs):
+        token = current_tool.set(fn.__name__)
         try:
             return await asyncio.to_thread(fn, *args, **kwargs)
         except Exception as exc:  # last-resort guard so a tool never raises into MCP
             logger.exception("Tool %s failed", fn.__name__)
             return _error_dict(f"{fn.__name__} failed: {exc}")
+        finally:
+            current_tool.reset(token)
 
     mcp.tool()(_async_tool)
     return fn
@@ -416,6 +423,23 @@ def check_environment() -> dict:
                       "license through its own install (license.dat); if flows fail with license errors, "
                       "run configure_diamond(lm_license_file=...).",
         })
+    audit = resolve_audit_log_path()
+    if audit.path is None:
+        checks.append({
+            "name": "audit_log", "status": "warning",
+            "detail": f"Command audit logging is disabled ({audit.source}).",
+        })
+    else:
+        ancestor = Path(audit.path).parent
+        while not ancestor.exists() and ancestor != ancestor.parent:
+            ancestor = ancestor.parent
+        if os.access(ancestor, os.W_OK):
+            checks.append({"name": "audit_log", "status": "ok", "detail": f"{audit.path} (from {audit.source})"})
+        else:
+            checks.append({
+                "name": "audit_log", "status": "warning",
+                "detail": f"{audit.path} cannot be written; commands will not be audited.",
+            })
     blocking = [c for c in checks if c["status"] in ("missing", "error")]
     ready = not blocking
     summary = "Environment is ready." if ready else f"Environment is NOT ready - {len(blocking)} issue(s)."
@@ -1048,7 +1072,7 @@ def read_report(file_path: str, offset: int = 0, max_chars: int = _MAX_REPORT_CH
 @_tool
 def run_tcl(command: str, timeout: Optional[float] = None) -> dict:
     """
-    Run arbitrary Tcl in the live Diamond console (any prj_* command, or plain Tcl). Multi-line scripts are supported. Prefer the dedicated tools; use this for commands they do not cover.
+    Run arbitrary Tcl in the live Diamond console (any prj_* command, or plain Tcl). Multi-line scripts are supported. Prefer the dedicated tools; use this for commands they do not cover. Commands containing 'prj_project close' are refused because they can crash Diamond; use close_project.
 
     Args:
         command: Tcl to run.
@@ -1056,6 +1080,17 @@ def run_tcl(command: str, timeout: Optional[float] = None) -> dict:
     """
     if not command.strip():
         return _error_dict("command must not be empty.")
+    if _CLOSE_COMMAND_RE.search(command):
+        audit = _get_session().audit
+        if audit is not None:
+            audit.record(
+                "refused", tool=current_tool.get(), command=command, reason="prj_project close"
+            )
+        return _error_dict(
+            "Refused: 'prj_project close' intermittently crashes Diamond. Use close_project, "
+            "which closes the project by restarting the console.",
+            hints=["Call close_project instead (save_project first to keep changes)."],
+        )
     return _run(command, timeout=timeout)
 
 

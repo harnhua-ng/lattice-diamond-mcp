@@ -7,6 +7,7 @@ without a Diamond installation or licence. Tests that need tclsh are skipped
 when it is not installed. Tests marked `integration` need a real Diamond.
 
 Fixtures provided:
+    isolated_audit_log  (autouse) redirects the audit log into a temporary directory
     fake_exe        path to the fake diamondc launcher
     session         a started DiamondSession on the fake console
     server_session  a started session installed into the server module
@@ -26,6 +27,14 @@ FAKE_DIR = Path(__file__).parent / "fake_diamond"
 DATA_DIR = Path(__file__).parent / "data"
 
 needs_tclsh = pytest.mark.skipif(shutil.which("tclsh") is None, reason="tclsh is not installed")
+
+
+@pytest.fixture(autouse=True)
+def isolated_audit_log(tmp_path_factory, monkeypatch):
+    """Keep every test's audit log out of the real home directory."""
+    path = tmp_path_factory.mktemp("audit") / "audit.log"
+    monkeypatch.setenv("DIAMOND_MCP_AUDIT_LOG", str(path))
+    return path
 
 
 @pytest.fixture(scope="session")

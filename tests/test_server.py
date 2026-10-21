@@ -78,6 +78,30 @@ def test_stop_diamond(server_session):
     assert not server_session.is_running
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "prj_project close",
+        "  prj_project   close  ",
+        "catch {prj_project close}",
+        "puts x; prj_project close",
+        "set r [prj_project close]",
+        "if {1} {\n  prj_project close\n}",
+    ],
+)
+def test_run_tcl_refuses_prj_project_close(server_session, command):
+    result = server.run_tcl(command)
+    assert not result["success"]
+    assert "close_project" in result["output"]
+    assert not server_session.is_running  # refused before the console was even started
+
+
+@pytest.mark.parametrize("command", ["prj_project closed_form", "puts {prj_project closer}", "set my_prj_project close"])
+def test_run_tcl_does_not_refuse_lookalikes(server_session, command):
+    # These do not run the close command; they fail or succeed on their own merits.
+    assert "Refused" not in server.run_tcl(command)["output"]
+
+
 # ------------------------------------------------------------------ project
 
 def test_open_project_success_reports_preflight(server_session, ldf_project):
