@@ -1,0 +1,30 @@
+Report Summary
+--------------
+----------------------------------------------------------------------------
+Preference                              |   Constraint|       Actual|Levels
+----------------------------------------------------------------------------
+                                        |             |             |
+Default path enumeration                |     0.000 ns|    10.576 ns|   0  
+                                        |             |             |
+Default net enumeration                 |     0.000 ns|     3.004 ns|   0  
+                                        |             |             |
+----------------------------------------------------------------------------
+
+
+All preferences were met.
+
+
+Clock Domains Analysis
+------------------------
+
+Found 0 clocks:
+
+
+Timing summary (Setup):
+---------------
+
+Timing errors: 0  Score: 0
+Cumulative negative slack: 0
+
+
+Constraints cover 4 paths, 5 nets, and 5 connections (100.00% coverage)

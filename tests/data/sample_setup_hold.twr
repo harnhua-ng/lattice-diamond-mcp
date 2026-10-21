@@ -1,0 +1,66 @@
+Report Summary
+--------------
+----------------------------------------------------------------------------
+Preference                              |   Constraint|       Actual|Levels
+----------------------------------------------------------------------------
+                                        |             |             |
+FREQUENCY NET "sys_clk_c" 100.000000    |             |             |
+MHz ;                                   |            -|            -|   0  
+                                        |             |             |
+FREQUENCY PORT "sys_clk" 500.000000 MHz |             |             |
+;                                       |  500.000 MHz|  125.000 MHz|   0 *
+                                        |             |             |
+FREQUENCY NET "buf_clock_1" 500.000000  |             |             |
+MHz ;                                   |  500.000 MHz|  125.000 MHz|   0 *
+                                        |             |             |
+FREQUENCY NET "buf_clock_2" 400.000000  |             |             |
+MHz ;                                   |  400.000 MHz|  125.000 MHz|   0 *
+                                        |             |             |
+FREQUENCY NET "buf_clock_3" 300.000000  |             |             |
+MHz ;                                   |  300.000 MHz|  222.173 MHz|   5 *
+                                        |             |             |
+FREQUENCY NET "pll_exa_inst/CLKOS2"     |             |             |
+250.000000 MHz ;                        |            -|            -|   0  
+                                        |             |             |
+----------------------------------------------------------------------------
+
+
+4 preferences(marked by "*" above) not met.
+
+Report Summary
+--------------
+----------------------------------------------------------------------------
+Preference(MIN Delays)                  |   Constraint|       Actual|Levels
+----------------------------------------------------------------------------
+                                        |             |             |
+FREQUENCY NET "sys_clk_c" 100.000000    |             |             |
+MHz ;                                   |            -|            -|   0  
+                                        |             |             |
+FREQUENCY PORT "sys_clk" 500.000000 MHz |             |             |
+;                                       |            -|            -|   0  
+                                        |             |             |
+FREQUENCY NET "buf_clock_1" 500.000000  |             |             |
+MHz ;                                   |            -|            -|   0  
+                                        |             |             |
+FREQUENCY NET "buf_clock_2" 400.000000  |             |             |
+MHz ;                                   |            -|            -|   0  
+                                        |             |             |
+FREQUENCY NET "buf_clock_3" 300.000000  |             |             |
+MHz ;                                   |     0.000 ns|     0.379 ns|   2  
+                                        |             |             |
+FREQUENCY NET "pll_exa_inst/CLKOS2"     |             |             |
+250.000000 MHz ;                        |            -|            -|   0  
+                                        |             |             |
+----------------------------------------------------------------------------
+
+
+All preferences were met.
+
+Constraints cover 75 paths, 7 nets, and 88 connections (90.72% coverage)
+
+Timing summary (Setup and Hold):
+---------------
+
+Timing errors: 38 (setup), 0 (hold)
+Score: 17644 (setup), 0 (hold)
+Cumulative negative slack: 35144 (35144+0)

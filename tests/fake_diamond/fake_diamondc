@@ -1,0 +1,5 @@
+#!/bin/bash
+# Test double for diamondc: runs the fake Tcl console under the real tclsh.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export FAKE_DIAMOND_DATA="$DIR/../data"
+exec tclsh "$DIR/fake_console.tcl"

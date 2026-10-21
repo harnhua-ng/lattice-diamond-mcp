@@ -1,0 +1,22 @@
+All signals are completely routed.
+
+
+PAR_SUMMARY::Run status = Completed
+PAR_SUMMARY::Number of unrouted conns = 0
+PAR_SUMMARY::Worst  slack<setup/<ns>> = -0.469
+PAR_SUMMARY::Timing score<setup/<ns>> = 2.516
+PAR_SUMMARY::Worst  slack<hold /<ns>> = 0.303
+PAR_SUMMARY::Timing score<hold /<ns>> = 0.000
+PAR_SUMMARY::Number of errors = 0
+
+Total CPU  time to completion: 2 secs 
+Total REAL time to completion: 10 secs 
+
+par done!
+
+Note: user must run 'Trace' for timing closure signoff.
+
+Copyright (c) 1991-1994 by NeoCAD Inc. All rights reserved.
+Copyright (c) 1995 AT&T Corp.   All rights reserved.
+Copyright (c) 1995-2001 Lucent Technologies Inc.  All rights reserved.
+Copyright (c) 2001 Agere Systems   All rights reserved.

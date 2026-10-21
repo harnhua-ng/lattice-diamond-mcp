@@ -1,0 +1,36 @@
+Design Summary
+--------------
+
+   Number of registers:    140 out of  1520 (9%)
+      PFU registers:          129 out of  1280 (10%)
+      PIO registers:           11 out of   240 (5%)
+   Number of SLICEs:        98 out of   640 (15%)
+      SLICEs as Logic/ROM:     98 out of   640 (15%)
+      SLICEs as RAM:            0 out of   480 (0%)
+      SLICEs as Carry:         14 out of   640 (2%)
+   Number of LUT4s:        191 out of  1280 (15%)
+      Number used as logic LUTs:        163
+      Number used as distributed RAM:     0
+      Number used as ripple logic:       28
+      Number used as shift registers:     0
+   Number of PIO sites used: 18 + 4(JTAG) out of 80 (28%)
+   Number of block RAMs:  0 out of 7 (0%)
+   Number of GSRs:        1 out of 1 (100%)
+   EFB used :        No
+   JTAG used :       No
+   Readback used :   No
+   Oscillator used : No
+   Startup used :    No
+   POR :             On
+   Bandgap :         On
+   Number of Power Controller:  0 out of 1 (0%)
+   Number of Dynamic Bank Controller (BCINRD):  0 out of 4 (0%)
+   Number of Dynamic Bank Controller (BCLVDSO):  0 out of 1 (0%)
+   Number of DCCA:  0 out of 8 (0%)
+   Number of DCMA:  0 out of 2 (0%)
+   Number of PLLs:  0 out of 1 (0%)
+   Number of DQSDLLs:  0 out of 2 (0%)
+   Number of CLKDIVC:  0 out of 4 (0%)
+   Number of ECLKSYNCA:  0 out of 4 (0%)
+   Number of ECLKBRIDGECS:  0 out of 2 (0%)
+   Notes:-

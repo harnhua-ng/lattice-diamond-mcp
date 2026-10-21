@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lattice-diamond-mcp"
+version = "0.1.0"
+description = "MCP server for Lattice Diamond FPGA design software"
+readme = "README.md"
+license = {text = "Proprietary"}
+requires-python = ">=3.11"
+keywords = ["mcp", "diamond", "fpga", "lattice", "ai"]
+dependencies = [
+    "mcp>=1.29.0,<2",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+diamond-mcp = "diamond_mcp:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["diamond_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires a real Lattice Diamond installation and a licence (set DIAMOND_TEST_LDF)",
+]
