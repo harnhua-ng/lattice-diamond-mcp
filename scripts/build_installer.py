@@ -242,7 +242,9 @@ def write_zip(stage, outdir, info):
             if path.is_file():
                 archive.write(path, "%s/%s" % (root, path.relative_to(stage).as_posix()))
     digest = hashlib.sha256(target.read_bytes()).hexdigest()
-    (outdir / (name + ".sha256")).write_text("%s  %s\n" % (digest, name), encoding="utf-8")
+    # Bytes, not text: on Windows text mode would write "\r\n", and `sha256sum -c` would then look for
+    # a file whose name ends in a carriage return.
+    (outdir / (name + ".sha256")).write_bytes(("%s  %s\n" % (digest, name)).encode("utf-8"))
     return target, digest
 
 

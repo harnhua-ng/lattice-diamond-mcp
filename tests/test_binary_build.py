@@ -347,6 +347,48 @@ def test_smoke_test_command_line_option(tmp_path):
     assert failed.returncode == 1 and "SMOKE TEST FAILED" in failed.stderr and "Traceback" not in failed.stderr
 
 
+def windows_text_mode(monkeypatch):
+    """Make Path.write_text behave as on Windows, where text mode turns \\n into \\r\\n."""
+    original = Path.write_text
+
+    def write_text(self, data, encoding=None, errors=None, newline=None):
+        if newline is None:
+            data = data.replace("\n", "\r\n")
+        return original(self, data, encoding=encoding, errors=errors, newline="")
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+
+
+@pytest.mark.parametrize("module_name", ["build_binary", "build_installer"])
+def test_checksum_file_has_unix_line_endings_even_where_text_mode_adds_carriage_returns(tmp_path, monkeypatch, module_name):
+    # Regression: on Windows the .sha256 file was written as "<hash>  <name>\\r\\n", and `sha256sum -c`
+    # (run by the CI verify jobs under Git Bash) then looked for a file whose name ends in a carriage return.
+    windows_text_mode(monkeypatch)
+    module = build if module_name == "build_binary" else load("build_installer")
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "BUILDINFO").write_text("{}")
+    out = tmp_path / "out"
+    out.mkdir()
+    info = {"version": "0.1.0", "python": "3.11", "python_tag": "cp311", "platform": "linux-x86_64"}
+    if module_name == "build_binary":
+        target, digest = module.write_zip(stage, out, "bundle", "root")
+        checksum = out / "bundle.zip.sha256"
+    else:
+        target, digest = module.write_zip(stage, out, info)
+        checksum = out / (target.name + ".sha256")
+    raw = checksum.read_bytes()
+    assert b"\r" not in raw
+    assert raw == ("%s  %s\n" % (digest, target.name)).encode()
+
+
+def test_the_simulation_really_would_have_broken_the_old_behaviour(tmp_path, monkeypatch):
+    windows_text_mode(monkeypatch)
+    probe = tmp_path / "probe"
+    probe.write_text("a\n", encoding="utf-8")
+    assert probe.read_bytes() == b"a\r\n"
+
+
 @posix_only
 def test_write_zip_keeps_execute_bits_and_writes_a_checksum(tmp_path):
     stage = tmp_path / "stage"
