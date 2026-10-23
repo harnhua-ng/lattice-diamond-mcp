@@ -1,0 +1,372 @@
+name: Build dist
+
+# The installers for lattice-diamond-mcp, built the way cortex-bridge's workflow builds its own:
+# started by hand, one zip per operating system, each tested on a clean machine. Two kinds:
+#
+#   STANDALONE  lattice-diamond-mcp-<version>-<os>-x86_64.zip
+#               A PyInstaller program with its own CPython embedded. Python-agnostic: the machine
+#               that runs it needs no Python at all, and install.py needs any Python 3.8+. Linux
+#               glibc 2.17+ (Red Hat 7). Comes with a CycloneDX SBOM and LEGAL_REVIEW.txt.
+#
+#   WHEELS      lattice-diamond-mcp-<version>-cp<NN>-<os>-x86_64.zip
+#               The package and every dependency as wheels, installed with pip into a virtual
+#               environment. Tied to ONE Python version (the `wheels_python` input) and needs
+#               glibc 2.28+ on Linux (Red Hat 8). Contains no PyInstaller code. Readable source.
+#
+# Each zip is built on the operating system it is for: pip and uv resolve for the machine they run
+# on, so a Windows zip built on Linux would silently lack Windows-only dependencies.
+#
+# Everything that matters is in scripts/build_binary.py and scripts/build_installer.py, so a build
+# can be reproduced on a laptop with the same commands the workflow runs. Both scripts test-install
+# their own zip before writing it; the verify jobs then install each zip on a FRESH runner.
+#
+# Status: the shell steps of every job were executed on a Linux host and the file validates against
+# GitHub's workflow schema. The workflow itself has never run on GitHub, and the Windows legs have
+# never run anywhere. The first run is the first test of both.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'git ref to build'
+        required: true
+        default: 'main'
+      installers:
+        description: 'Which installers to build'
+        required: false
+        type: choice
+        options: [both, standalone, wheels]
+        default: both
+      wheels_python:
+        description: 'Python version of the wheels zips (3.11 is the minimum), or `all`'
+        required: false
+        type: choice
+        options: ['3.11', '3.12', '3.13', all]
+        default: '3.11'
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------------------ standalone
+
+  build-standalone:
+    name: Build standalone (${{ matrix.name }})
+    if: ${{ inputs.installers != 'wheels' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux-x86_64
+          - os: windows-2022
+            name: windows-x86_64
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+
+      # Only runs the build script. The Python that goes INTO the program is a separate,
+      # uv-managed CPython pinned in the script, so this version does not affect the output.
+      - name: Set up Python to run the build script
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the pinned uv
+        run: |
+          uv_version=$(python -c "import pathlib, re; print(re.search(r'^UV_VERSION = \"([0-9.]+)\"', pathlib.Path('scripts/build_binary.py').read_text(), re.M).group(1))")
+          echo "uv ${uv_version}"
+          python -m pip install "uv==${uv_version}"
+
+      - name: Show the toolchain
+        run: |
+          python --version
+          python -m uv --version
+          git --version
+          if command -v objdump >/dev/null; then objdump --version | head -n 1; fi
+
+      # Fails, and writes nothing, if uv.lock is out of date, a bundled file needs too new a
+      # glibc, the program does not speak MCP, the SBOM does not match the program, or the
+      # finished zip does not install.
+      - name: Build the standalone installer
+        run: python scripts/build_binary.py --outdir out
+
+      - name: List the output
+        run: ls -la out
+
+      - name: Upload the standalone installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: lattice-diamond-mcp-standalone-${{ matrix.name }}
+          path: |
+            out/lattice-diamond-mcp-*.zip
+            out/lattice-diamond-mcp-*.zip.sha256
+            out/lattice-diamond-mcp-*.cdx.json
+          if-no-files-found: error
+
+  # The build job already installs its own zip, but on the machine that built it. This installs
+  # each zip on a fresh runner, the way a customer would, with an installer Python that is not
+  # the one used to build: 3.8 (the oldest install.py supports) and 3.13, on two Ubuntu releases
+  # and on Windows.
+  #
+  # `!cancelled()` lets this run even when one OS's build failed, so a first-time failure on
+  # Windows does not hide the Linux result. The leg whose artifact is missing fails at the
+  # download step, which says so.
+  verify-standalone:
+    needs: build-standalone
+    if: ${{ !cancelled() && needs.build-standalone.result != 'skipped' }}
+    name: Verify standalone (${{ matrix.name }} on ${{ matrix.os }}, installer on Python ${{ matrix.installer_python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux-x86_64
+            installer_python: '3.8'
+          - os: ubuntu-24.04
+            name: linux-x86_64
+            installer_python: '3.13'
+          - os: windows-2022
+            name: windows-x86_64
+            installer_python: '3.8'
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Download the installer
+        uses: actions/download-artifact@v4
+        with:
+          name: lattice-diamond-mcp-standalone-${{ matrix.name }}
+          path: out
+
+      - name: Check the checksum
+        run: cd out && sha256sum -c ./*.zip.sha256
+
+      - name: Unpack
+        run: |
+          mkdir unpacked
+          unzip -q out/lattice-diamond-mcp-*.zip -d unpacked
+          ls unpacked/*/
+
+      # The Python that runs install.py: the oldest it supports on one leg, a recent one on the others.
+      - name: Set up the installer's Python
+        id: installer
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.installer_python }}
+
+      # The Python that runs the protocol check below (it needs 3.11 or later).
+      - name: Set up Python for the protocol check
+        id: checker
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install with the installer's Python
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          install_dir=$(native "$RUNNER_TEMP/diamond-mcp")
+          '${{ steps.installer.outputs.python-path }}' --version
+          '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --no-register --install-dir "$install_dir"
+          echo "INSTALL_DIR=$install_dir" >> "$GITHUB_ENV"
+
+      - name: Talk MCP to the installed program
+        run: |
+          exe="$INSTALL_DIR/diamond-mcp"
+          if [ -f "$exe.exe" ]; then exe="$exe.exe"; fi
+          '${{ steps.checker.outputs.python-path }}' scripts/build_binary.py --smoke-test "$exe"
+
+      # The program carries its own Python, so it must start with no Python and no environment.
+      - name: Run it with an empty environment (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          help=$(env -i "$INSTALL_DIR/diamond-mcp" --help)   # not piped to head: it would die of SIGPIPE under pipefail
+          echo "${help%%$'\n'*}"
+          ldd "$INSTALL_DIR/diamond-mcp"
+          if ldd "$INSTALL_DIR/diamond-mcp" "$INSTALL_DIR"/_internal/libpython*.so* | grep -q "not found"; then
+            echo "a library is missing on this machine" >&2; exit 1
+          fi
+
+      - name: Uninstall
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --uninstall --install-dir "$INSTALL_DIR"
+          if [ -e "$INSTALL_DIR" ]; then echo "$INSTALL_DIR is still there" >&2; exit 1; fi
+
+  # ---------------------------------------------------------------------------------- wheels
+
+  # Turns the `wheels_python` choice into the list the two wheels jobs build and verify.
+  plan:
+    name: Plan the wheels builds
+    if: ${{ inputs.installers != 'standalone' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    outputs:
+      pythons: ${{ steps.pick.outputs.pythons }}
+    steps:
+      - name: Pick the Python versions
+        id: pick
+        env:
+          CHOICE: ${{ inputs.wheels_python || '3.11' }}
+        run: |
+          if [ "$CHOICE" = all ]; then
+            echo 'pythons=["3.11","3.12","3.13"]' >> "$GITHUB_OUTPUT"
+          else
+            echo "pythons=[\"$CHOICE\"]" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$GITHUB_OUTPUT"
+
+  # One zip per (OS, Python), each built on that OS under that Python: the zip contains the
+  # dependency wheels for exactly that pair, which pip downloads for the machine it runs on.
+  build-wheels:
+    needs: plan
+    name: Build wheels (${{ matrix.name }}, Python ${{ matrix.python }})
+    if: ${{ inputs.installers != 'standalone' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+        python: ${{ fromJSON(needs.plan.outputs.pythons) }}
+        include:
+          - os: ubuntu-22.04
+            name: linux-x86_64
+          - os: windows-2022
+            name: windows-x86_64
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+
+      # The Python the zip is FOR: build_installer.py records it and the installer will look for it.
+      - name: Set up Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install the build front end
+        run: python -m pip install "build==1.6.1"
+
+      - name: Show the toolchain
+        run: |
+          python --version
+          python -m pip --version
+          python -m build --version
+          git --version
+
+      # Builds the wheel, downloads every dependency wheel for this Python and OS, writes the
+      # pinned constraints and licence texts, then installs the bundle into a throwaway
+      # environment with its own install.py. Fails, and writes nothing, if any of that fails.
+      - name: Build the wheels installer
+        run: python scripts/build_installer.py --outdir out
+
+      - name: List the output
+        run: ls -la out
+
+      - name: Upload the wheels installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: lattice-diamond-mcp-wheels-${{ matrix.name }}-py${{ matrix.python }}
+          path: |
+            out/lattice-diamond-mcp-*.zip
+            out/lattice-diamond-mcp-*.zip.sha256
+          if-no-files-found: error
+
+  # Installs each wheels zip on a fresh runner under the Python it is for, then talks MCP to the
+  # installed server. install.py is run by that same Python; the wheels zip needs the matching one.
+  # Like verify-standalone, it still runs when one leg's build failed.
+  verify-wheels:
+    needs: [plan, build-wheels]
+    name: Verify wheels (${{ matrix.name }}, Python ${{ matrix.python }})
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.build-wheels.result != 'skipped' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+        python: ${{ fromJSON(needs.plan.outputs.pythons) }}
+        include:
+          - os: ubuntu-22.04
+            name: linux-x86_64
+          - os: windows-2022
+            name: windows-x86_64
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Download the installer
+        uses: actions/download-artifact@v4
+        with:
+          name: lattice-diamond-mcp-wheels-${{ matrix.name }}-py${{ matrix.python }}
+          path: out
+
+      - name: Check the checksum
+        run: cd out && sha256sum -c ./*.zip.sha256
+
+      - name: Unpack
+        run: |
+          mkdir unpacked
+          unzip -q out/lattice-diamond-mcp-*.zip -d unpacked
+          ls unpacked/*/
+
+      - name: Set up Python ${{ matrix.python }}
+        id: py
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          venv_dir=$(native "$RUNNER_TEMP/diamond-mcp-venv")
+          '${{ steps.py.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --no-register --venv-dir "$venv_dir"
+          echo "VENV_DIR=$venv_dir" >> "$GITHUB_ENV"
+
+      - name: Talk MCP to the installed server
+        run: |
+          exe="$VENV_DIR/bin/diamond-mcp"
+          if [ -f "$VENV_DIR/Scripts/diamond-mcp.exe" ]; then exe="$VENV_DIR/Scripts/diamond-mcp.exe"; fi
+          '${{ steps.py.outputs.python-path }}' scripts/build_binary.py --smoke-test "$exe"
+
+      - name: Uninstall
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          '${{ steps.py.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --uninstall --venv-dir "$VENV_DIR"
+          if [ -e "$VENV_DIR" ]; then echo "$VENV_DIR is still there" >&2; exit 1; fi

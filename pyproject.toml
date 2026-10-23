@@ -16,6 +16,12 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
+dist = ["build"]
+
+[dependency-groups]
+# Used only to build the standalone executable (scripts/build_binary.py). Kept in a group so
+# uv.lock records PyInstaller and its dependencies with hashes; it is not a runtime dependency.
+build = ["pyinstaller==6.22.3"]
 
 [project.scripts]
 diamond-mcp = "diamond_mcp:main"

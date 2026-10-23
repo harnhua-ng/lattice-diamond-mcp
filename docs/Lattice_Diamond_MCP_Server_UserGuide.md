@@ -209,7 +209,7 @@ from the server is a candidate for a later release.
 
 ## Requirements
 
-- Python 3.11 or later on the machine that runs the server.
+- A 64-bit Linux machine. The standalone installer needs no Python to run the server; the Python-packages installer needs Python 3.11 (see Installation).
 - Lattice Diamond installed on the same machine, with a valid license.
   Diamond 3.14.0.75.0 on Linux is the validated combination. Windows is supported in the
   code (it uses `pnmainc.exe`) but has not been tested.
@@ -220,21 +220,119 @@ supported in this release.
 
 ## Installation
 
-Install the wheel supplied with the release:
+The release comes as an offline zip file. There are two kinds; use the **standalone** one unless you
+have a reason not to.
+
+| | Standalone (recommended) | Python packages |
+|---|---|---|
+| File name | `lattice-diamond-mcp-<version>-linux-x86_64.zip` | `lattice-diamond-mcp-<version>-cp311-linux-x86_64.zip` |
+| Python needed to run the server | **none** (it carries its own) | exactly Python 3.11 |
+| Python needed to run the installer | any Python 3.8 or later | Python 3.11 (found automatically) |
+| Linux | glibc 2.17 or later, such as Red Hat Enterprise Linux 7 or later | glibc 2.28 or later, such as Red Hat 8 or later |
+| Disk space | about 90 MB while installing (zip 17 MB, unpacked 35 MB, installed 34 MB), about 34 MB afterwards | about 100 MB while installing, about 65 MB afterwards |
+
+Neither kind needs network access or a package index while installing. A Windows build is defined in
+the project's build workflow but has never been run, so no Windows zip has been tested; see
+"Requirements".
+
+### What you need
+
+- **Standalone zip:** a 64-bit Linux machine with glibc 2.17 or later, the standard `libz` and
+  `libgcc_s` libraries (both were present on the Red Hat 7.9 and 8.10 hosts it was tested on), and
+  any Python 3.8 or later to run `install.py`. The server itself needs no Python.
+- **Python-packages zip:** Python 3.11 (the installer looks for the exact version the zip was built
+  for, and can find it even if the `python3` on your path is older), and Linux with glibc 2.28 or
+  later. Red Hat 7 is too old for this kind; use the standalone zip there.
+
+### Install
+
+1. Check the download against the `.sha256` file that came with it:
+
+   ```bash
+   sha256sum -c lattice-diamond-mcp-0.1.0-linux-x86_64.zip.sha256
+   ```
+
+2. Unpack it and run the installer (use the name of your zip):
+
+   ```bash
+   unzip lattice-diamond-mcp-0.1.0-linux-x86_64.zip
+   cd lattice-diamond-mcp-0.1.0
+   python3 install.py
+   ```
+
+   Use `unzip` or another tool that keeps file permissions. The installer repairs the execute bit
+   of the server program if a tool dropped it.
+
+**Standalone zip.** The installer copies the `diamond-mcp` folder to `~/diamond-mcp`, checks that
+the program starts, and registers it with Claude Code under the name `diamond`. It touches no
+Python installation. **Python-packages zip.** It creates its own environment in
+`~/diamond-mcp-venv`, installs the packages from the zip without the network, checks that the
+server starts, and registers it. In both cases you can run it again at any time: it replaces its
+own folder and does not register twice, and it never touches a folder it did not create.
+
+### Options
+
+| Option | Purpose |
+|---|---|
+| `--no-register` | Install only. Do not register with Claude Code. |
+| `--install-dir DIR` | Standalone zip: where to install (default `~/diamond-mcp`). |
+| `--venv-dir DIR` | Python-packages zip: where to create the environment (default `~/diamond-mcp-venv`). |
+| `--python PATH` | Python-packages zip: use this interpreter; it must be the version the zip was built for. |
+| `--diamond-exe PATH` | Store `DIAMOND_EXE` in the Claude Code registration. |
+| `--claude-path PATH` | Path to the `claude` program, if it is not on your `PATH`. The installer also looks in the VS Code Claude Code extension. |
+| `--name NAME`, `--scope SCOPE` | Registration name (default `diamond`) and scope (`user`, `local` or `project`; default `user`). |
+| `--dry-run` | Show what would be done without doing it. |
+| `--uninstall` | Remove the registration and the installation. |
+
+If the `claude` program is not found, the installer still finishes and prints the command to
+register the server later, which also works for other MCP clients that can run a stdio
+server.
+
+### Uninstall
 
 ```bash
-python3.11 -m venv ~/diamond-mcp-venv
-~/diamond-mcp-venv/bin/pip install lattice_diamond_mcp-0.1.0-py3-none-any.whl
+python3 install.py --uninstall
 ```
 
-On Windows use `python -m venv %USERPROFILE%\diamond-mcp-venv` and
-`%USERPROFILE%\diamond-mcp-venv\Scripts\pip.exe`.
+Run it from the unpacked zip. It removes the Claude Code registration (only if it points to this
+installation) and the installation folder (only if this installer created it). It does not delete
+your audit log, your config file or your projects.
 
-This installs the `diamond-mcp` command. Check it:
+### If something goes wrong
 
-```bash
-~/diamond-mcp-venv/bin/diamond-mcp --help
-```
+| Message | Meaning |
+|---|---|
+| `This build needs glibc X or later; this machine has Y` | The operating system is too old for this zip. The standalone zip needs 2.17, the Python-packages zip 2.28. |
+| `... was built for windows but this machine is linux` | Use the zip built for your operating system. |
+| `This installer needs Python 3.11 and none was found` | Python-packages zip only: install Python 3.11, or pass its path with `--python`. Or use the standalone zip, which needs no matching Python. |
+| `... already exists and was not created by this installer` | Choose another `--install-dir` or `--venv-dir`; the installer never changes a folder it did not create. |
+| `The diamond-mcp folder is missing next to install.py` | Run `install.py` from the unpacked zip, not from somewhere else. |
+| `Could not install into ... If the server is running, close your AI client` | Your AI client has the old program running; close it and run the installer again. |
+| `A server named 'diamond' is already registered ... does not point to this installation` | Another server uses that name. Remove it with `claude mcp remove diamond`, or use `--name`. |
+| The installed program fails with `GLIBC_x.y not found` | This machine's glibc is older than the build needs. Report the message; it is checked when the zip is built, so it should not happen. |
+
+### What is in the zip
+
+Both kinds contain `install.py`, `LICENSE` (the AI Solutions Software License Agreement),
+`BUILDINFO` (the version, platform and source revision the zip was built from),
+`THIRD_PARTY_LICENSES.txt` with a folder of licence texts, and this guide. The
+standalone zip also contains:
+
+- `LEGAL_REVIEW.txt`, a short list of items for your Legal team (see below);
+- `diamond-mcp/`, the server program with its own Python;
+- `sbom.cdx.json`, a software bill of materials in CycloneDX 1.5 format. It lists the Python
+  packages that are really inside the program, the embedded Python interpreter, and every native
+  library in the program with its SHA-256 hash. It deliberately **leaves out** packages the
+  program does not contain, so a vulnerability scanner does not report code that is not there
+  (the left-out names are in its `diamond-mcp:locked-but-not-bundled` property). It carries no
+  licence data for the packages; read `THIRD_PARTY_LICENSES.txt` for that. It was generated by
+  `uv`, whose SBOM export is marked experimental.
+
+The server program is built with PyInstaller, and PyInstaller's bootloader is the program's
+executable. Its licence file is included in `THIRD_PARTY_LICENSES` as a notice; it describes the
+bootloader as GPL-2.0-or-later with an exception that allows embedding it in other programs.
+`LEGAL_REVIEW.txt` in the zip summarises this, and the other item that needs a Legal decision (the
+`LICENSE` text, which is a copy of the one used by the Radiant tools), for your Legal team.
 
 Developers who work from the source repository should read `README.md` instead.
 
@@ -291,6 +389,12 @@ point `DIAMOND_MCP_CONFIG` at any file:
 Every field is optional. Do not commit a license value to a shared repository.
 
 ## Register the server with your AI client
+
+`install.py` registers the server with Claude Code for you. This section is for registering by
+hand, or with another client. Use the path of the server program your installer reported: with
+the standalone zip it is `~/diamond-mcp/diamond-mcp`, with the Python-packages zip it is
+`~/diamond-mcp-venv/bin/diamond-mcp`. The examples below use the second; substitute the first
+if you installed the standalone zip.
 
 ### Claude Code
 
@@ -625,6 +729,14 @@ bwrap \
   --unshare-pid --unshare-ipc --unshare-uts --die-with-parent --new-session \
   "$HOME/diamond-mcp-venv/bin/diamond-mcp"
 ```
+
+With the **standalone** zip, replace the two `diamond-mcp-venv` lines with the program folder and
+its executable: `--ro-bind "$HOME/diamond-mcp" "$HOME/diamond-mcp"` and
+`"$HOME/diamond-mcp/diamond-mcp"`. This variant was tested: a full compile with a bitstream ran
+inside it, a write outside the project was refused, and the audit log was written. Because the
+standalone program is a folder, it does not unpack itself into `/tmp` when it starts, but the
+private `/tmp` below is still required: the server writes its command scripts there, and Diamond's
+tools and Tcl's `exec` use it too.
 
 What each part does:
 

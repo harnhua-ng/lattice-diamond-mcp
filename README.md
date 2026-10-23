@@ -43,6 +43,15 @@ tests/
     data/                trimmed excerpts of real Diamond 3.14 reports
     test_*.py            unit tests
     test_integration.py  tests against a real Diamond (skipped by default)
+scripts/
+    build_binary.py      builds the standalone (Python-free) installer zip, SBOM and checks
+    diamond-mcp.spec     PyInstaller spec (drops host libgcc_s and the build tools)
+    pyinstaller_entry.py the program PyInstaller freezes
+    build_installer.py   builds the wheels installer zip (verifies it before writing)
+    install.py           the installer that ships in both zips (standard library only)
+.github/workflows/
+    build-dist.yml       builds and verifies both installers on Linux and Windows
+uv.lock                  exact, hashed versions of every dependency (and of PyInstaller)
 pyproject.toml           packaging and pytest configuration
 ```
 
@@ -214,42 +223,255 @@ These were found by running real Diamond and are encoded in the code and tests.
 
 ## How to build and package
 
-Install the build front end and build both distributions:
+There are two installers. Both are offline zips that `scripts/install.py` installs and registers
+with Claude Code; `BUILDINFO` inside each says which kind it is.
+
+| | Standalone (recommended) | Wheels |
+|---|---|---|
+| Built by | `scripts/build_binary.py` | `scripts/build_installer.py` |
+| Built in CI | yes, `build-dist.yml` | yes, `build-dist.yml` |
+| Result | PyInstaller program with its own CPython | wheels installed into a virtual environment |
+| Python needed to **run** it | none | the exact version it was built for (3.11) |
+| Python needed to **install** it | any 3.8 or later | the exact version it was built for |
+| Minimum Linux | glibc 2.17 (Red Hat 7) | glibc 2.28 (Red Hat 8) |
+| Size | about 17 MB zip, 34 MB installed | about 10 MB zip, 65 MB installed |
+| SBOM | yes (CycloneDX, see below) | no |
+
+### The standalone installer
 
 ```bash
-pip install build
-python -m build
+pip install uv==0.13.5                 # the pinned version; the script refuses another
+python scripts/build_binary.py         # writes dist/lattice-diamond-mcp-<version>-<platform>.zip (+ .sha256, .cdx.json)
 ```
 
-This writes `dist/lattice_diamond_mcp-<version>-py3-none-any.whl` and a source
-distribution. The wheel contains the `diamond_mcp` package and the `diamond-mcp` console
-script; tests and test data are not included.
+Run it with any Python 3.11 or later. The Python that goes **into** the program is a separate,
+uv-managed CPython (`PYTHON_VERSION` in the script), so the result does not depend on the build
+machine's Python or system libraries. Build one zip per operating system, each on that system.
 
-Check a build in a clean environment:
+What the build does; any failure stops it and writes nothing:
+
+1. Checks `uv lock --check` (the lock matches `pyproject.toml`) and the pinned uv version.
+2. Installs the pinned CPython with `uv python install --no-bin --no-registry` (so uv creates no
+   shortcuts or registry entries) and builds with `uv run --frozen --no-editable --group build
+   pyinstaller scripts/diamond-mcp.spec`. Every package is the exact, hash-checked version in
+   `uv.lock`. PyInstaller is a locked **build** dependency (`[dependency-groups] build` in
+   `pyproject.toml`), not a runtime dependency.
+3. **On Linux, fails if any bundled native file needs glibc newer than 2.17.** This gate is what
+   keeps the program runnable on Red Hat 7, and it matters: PyInstaller copies `libgcc_s.so.1`
+   from the build machine, and Ubuntu 22.04's copy needs glibc 2.35, which would stop the program
+   starting on Red Hat 7 and Red Hat 8. The spec leaves that library out so the target's own copy
+   is used (`HOST_LIBRARIES` in `scripts/diamond-mcp.spec`). It also leaves out the packaging
+   tools PyInstaller's hooks would otherwise freeze in (`BUILD_TOOLS`).
+4. Starts the built program and speaks MCP to it: `initialize`, `tools/list` (at least 30 tools)
+   and a tool call.
+5. Writes the SBOM, collects licence texts, writes `BUILDINFO` and `LEGAL_REVIEW.txt`, zips the result with `install.py`,
+   then **installs that zip into a temporary folder and runs it again.**
+
+`python scripts/build_binary.py --smoke-test PATH_TO_PROGRAM` runs only step 4 against an existing
+program; the workflow uses it on the installed result.
+
+The program is a folder (PyInstaller "onedir"), not a single file. A one-file build unpacks itself
+into `/tmp` on every start, which is slower and needs a writable, executable `/tmp`; the sandbox
+example in the user guide makes `/tmp` a private tmpfs. `scripts/pyinstaller_entry.py` also gives
+the PyInstaller bootloader a flushable `sys.stdout` at exit: the MCP stdio transport closes
+`sys.stdout` when the client disconnects, and without this the bootloader's final flush printed a
+harmless but alarming `ValueError: I/O operation on closed file` traceback to stderr.
+
+#### The SBOM
+
+`uv export --format cyclonedx1.5` describes the locked Python packages only, and it is marked
+experimental by uv. It does not know what is inside the finished program, so `build_binary.py`
+corrects it:
+
+- **Packages that are locked but not in the program are removed.** `cffi`, `cryptography`,
+  `pycparser` and `pyjwt` (pulled in by `mcp`'s authentication code, which the stdio server never
+  loads) and the Windows-only `pywin32` are listed in the SBOM's
+  `diamond-mcp:locked-but-not-bundled` property instead, so scanners do not report vulnerabilities
+  in code that does not ship.
+- **The build fails if the program contains a package the SBOM would not list.** This was found
+  by measurement: PyInstaller was freezing `setuptools` and `packaging` from the build
+  environment into the program although they are not dependencies. They are now excluded, and
+  `check_sbom_matches_bundle` keeps it that way.
+- **The embedded interpreter and every bundled native file are added**, each native file with its
+  SHA-256 (the program, `libpython`, and the compiled `pydantic_core` and `rpds`).
+- Each package component carries the download location and SHA-256 of its files from the lock.
+- PyInstaller and uv are recorded as build tools.
+
+It does not contain licence data for the packages (uv does not export it); the licence texts are
+in `THIRD_PARTY_LICENSES/` in the zip. The interpreter is a python-build-standalone build; the
+SBOM names its version, not that project's own dependencies.
+
+#### PyInstaller's licence (for Legal)
+
+The PyInstaller *tool* is not shipped, but part of it is inside the program: the `diamond-mcp`
+executable is PyInstaller's compiled bootloader, and three of its loader modules are embedded.
+The licence file that ships with it (`COPYING.txt`, copied unmodified into `THIRD_PARTY_LICENSES/`)
+says PyInstaller is GPL-2.0-or-later with a "Bootloader Exception" that gives unlimited permission
+to link or embed the bootloader in other programs and distribute the result without restriction
+from those files; its run-time hooks are Apache-2.0. The licence file is shipped as a notice, as a
+precaution, and not because the exception is known to require one.
+
+Each build writes `LEGAL_REVIEW.txt` into the zip and prints a pointer to it. It lists, for Legal,
+the PyInstaller item (what is embedded, what the shipped licence says, the open question) and the
+product `LICENSE`, which is a copy of the cortex-bridge text. It is generated from the licence file that ships, and says
+`WARNING` instead of summarising the terms if the expected wording is no longer there, so a future
+PyInstaller release with different terms cannot pass unnoticed. It states facts, not conclusions.
+The wheels zip contains no PyInstaller code.
+
+#### Reproducibility
+
+The package set, the interpreter and the compiled libraries are identical from build to build,
+and `SOURCE_DATE_EPOCH` (set from the commit time) makes the `diamond-mcp` program itself
+identical too. The zip as a whole is **not** bit-for-bit reproducible: PyInstaller's
+`base_library.zip`, two packages' `RECORD` files, `BUILDINFO` and the SBOM's serial number and
+timestamp differ between builds. This was measured with two builds.
+
+#### CI: building and testing both installers
+
+`.github/workflows/build-dist.yml` builds **both** installers. It is started by hand: Actions tab,
+**Build dist**, **Run workflow**, with three inputs:
+
+| Input | Values | Default |
+|---|---|---|
+| `ref` | branch, tag or commit to build | `main` |
+| `installers` | `both`, `standalone`, `wheels` | `both` |
+| `wheels_python` | `3.11`, `3.12`, `3.13`, `all` (only for the wheels zips) | `3.11` |
+
+| Job | What it does | Artifacts |
+|---|---|---|
+| `build-standalone` | `build_binary.py` on `ubuntu-22.04` and `windows-2022` | `lattice-diamond-mcp-standalone-<os>` (zip, `.sha256`, SBOM) |
+| `verify-standalone` | installs each zip on a fresh runner with an installer Python that is not the build one (3.8 on Ubuntu 22.04 and Windows, 3.13 on Ubuntu 24.04), checks the checksum, speaks MCP to the installed program, runs it with an empty environment and checks `ldd` (Linux), uninstalls | none |
+| `plan` | turns `wheels_python` into the list of Pythons to build | none |
+| `build-wheels` | `build_installer.py` on each OS under each chosen Python | `lattice-diamond-mcp-wheels-<os>-py<version>` (zip, `.sha256`) |
+| `verify-wheels` | installs each wheels zip under the Python it was built for, speaks MCP to the installed server, uninstalls | none |
+
+The wheels zip is tied to one Python version, so `wheels_python` picks which. Each zip is built on the
+OS it is for, because pip and uv resolve dependencies for the machine they run on. The two verify jobs
+run even if another OS's build failed (`!cancelled()`), so a first-time Windows failure does not hide the
+Linux result; the leg whose artifact is missing fails at the download step.
+
+To test both kinds on both platforms, run it with the defaults. To build only one kind, set
+`installers`. Two things must be in the ref you build: `.github/workflows/build-dist.yml` (GitHub's
+documentation says a `workflow_dispatch` workflow must be on the default branch to be started) and
+`uv.lock` (the standalone build fails without it, and fails if it is out of date).
+
+**Status of the workflow:** its YAML validates against GitHub's workflow schema, and the shell steps of the
+standalone and wheels jobs were extracted from the file and executed on a Linux host, in order, in
+separate workspaces, starting from a bare Python. The workflow itself has **never run on GitHub**, and the
+Windows legs have never run anywhere. The Ubuntu runner is also untested; the glibc gate exists so that
+a surprise there fails the build instead of shipping. Install-test the first artifacts before relying on
+them. Not covered: the wheels zip is not tested on a machine whose default `python3` is older than the
+Python it needs (the standalone installer is, with 3.8), and neither route has a test job that runs the
+repository's own unit tests.
+
+### The wheels installer
 
 ```bash
-python3.11 -m venv /tmp/verify && /tmp/verify/bin/pip install dist/*.whl
-/tmp/verify/bin/diamond-mcp --help
+pip install build                      # once; "pip install -e .[dist]" also works
+python scripts/build_installer.py      # writes dist/lattice-diamond-mcp-<version>-<pythontag>-<platform>.zip
 ```
 
-To release:
+The zip holds `install.py`, our wheel and every dependency wheel (about 30 wheels, 9.5 MB),
+`constraints.txt` with the exact versions built and tested, `BUILDINFO`, the licence texts
+taken from the dependency wheels, and the user guide. A `.sha256` file is written beside it.
+Its installer path uses only the standard library, runs on Python 3.8 or later (a test enforces
+this), and installs with `pip install --no-index --find-links wheels -c constraints.txt`, so no
+network is used.
 
-1. Update `version` in `pyproject.toml`.
-2. Run `pytest`, and `pytest -m integration` against a real Diamond.
-3. Run `python -m build` and verify the wheel as above.
-4. Update the revision history in the user guide.
+What the build does:
 
-Notes:
+1. Builds the wheel with `python -m build`.
+2. Downloads dependency wheels with `pip download --only-binary=:all:` for the Python and
+   operating system that run the build. pip honours `PIP_INDEX_URL`, `PIP_FIND_LINKS`,
+   proxy variables and `pip.conf`.
+3. Writes `constraints.txt`, extracts licence files, and records the glibc floor (the
+   highest `manylinux` requirement among the wheels) in `BUILDINFO`.
+4. **Installs the bundle into a throwaway environment by running its own `install.py`**,
+   and fails if that does not work. `--skip-verify` bypasses this and must not be used for a
+   release.
+5. Writes the zip and its checksum.
 
-- `pyproject.toml` lists `wheel` in the build requirements so that builds also work with
-  older setuptools releases.
-- `python -m build` prints a deprecation warning that `project.license` as a TOML table
-  is deprecated (removal is announced for 2027-02-18). The Radiant server's
-  `pyproject.toml` has the same field. When both move to setuptools 77 or later, replace
-  it with an SPDX expression such as `LicenseRef-Lattice-Proprietary`.
-- Dependencies are not vendored. For an environment without network access, download the
-  wheels with `pip download .` on a connected machine and install with
-  `pip install --no-index --find-links <dir> lattice-diamond-mcp`.
+One zip is built per Python version and per operating system, each on that system. Do not
+build for another platform from this one: pip evaluates dependency markers for the machine
+it runs on, so a Windows zip built on Linux would silently lack the Windows-only dependency
+(`pywin32`).
+
+### What the installer does on the target machine
+
+`install.py` reads `BUILDINFO` and refuses a wrong operating system or a too-old glibc.
+
+- **Standalone zip:** copies the `diamond-mcp` folder into `--install-dir` (default
+  `~/diamond-mcp`) through a staging folder, so a failed copy never leaves a half-installed
+  program; restores the execute bit (some unzip tools drop it); runs `diamond-mcp --help`; and
+  registers it.
+- **Wheels zip:** finds the Python it was built for (searching `python3.11`, `python3`, `python`,
+  and `py -3.11` on Windows, so an older default `python3` is fine), creates a virtual
+  environment in `--venv-dir` (default `~/diamond-mcp-venv`), installs, checks, and registers.
+
+Both mark the folder they create with `.diamond-mcp-installer` and never reuse, replace or
+delete a folder that lacks it (an existing empty folder is accepted). Registration is
+`claude mcp add --scope user diamond -- <program>`; it will not overwrite a registration of the
+same name that points elsewhere. `--uninstall` reverses it with the same protections, and finds
+the right kind of installation from `BUILDINFO`. Note the argument order: `claude mcp add` treats
+`-e` as taking several values, so the server name must come before it.
+
+### Tests for the installers
+
+`tests/test_installer.py` covers the wheels route; `tests/test_binary_build.py` covers the
+standalone route. Between them: wheel and licence helpers, the glibc gate (and that the spec
+excludes `libgcc_s` and the build tools), the pins staying consistent (PyInstaller in `pyproject.toml`
+equals the lock), SBOM augmentation, pruning and validation, the bundle-versus-SBOM check, licence
+collection, `LEGAL_REVIEW.txt` (including its warning when the licence wording changes), the smoke test against the real server and against programs that misbehave (always a
+clean build failure, never a traceback), zip permissions, and the binary install, reinstall,
+refusal, dry-run, uninstall and failed-start cases against a fake `claude`. Two more tests build
+and install the real bundles; they need network access and are skipped unless
+`DIAMOND_TEST_INSTALLER=1` (wheels) or `DIAMOND_TEST_BINARY=1` (standalone, also needs uv).
+
+### Releasing
+
+1. Update `version` in `pyproject.toml`; if dependencies changed, run `uv lock` and commit
+   `uv.lock` (CI fails on a stale lock).
+2. Run `pytest`, `pytest -m integration` against a real Diamond, and the two opt-in tests above.
+3. Run the **Build dist** workflow, or `python scripts/build_binary.py` on each supported system.
+4. Add the approved `LICENSE` text (see below), and review `THIRD_PARTY_LICENSES.txt` and any
+   build warning about packages without a licence file.
+5. Update the revision history in the user guide.
+
+### Things to know
+
+- **The dependency set is dominated by `mcp`.** Its transitive dependencies include
+  `cryptography` and `cffi` (through `pyjwt[crypto]`), which this server never loads, and
+  `pydantic-core` and `rpds-py`, which it does. They make the wheels bundle platform specific,
+  and `cryptography` raises its glibc floor to 2.28. The standalone zip does not contain the two
+  that are not loaded, but `uv.lock` still pins them, so they still need tracking for security
+  updates until `mcp` stops requiring them.
+- **The standalone program needs `libz.so.1` and `libgcc_s.so.1` from the system**, plus `libc`,
+  `libdl` and `libpthread`. `libgcc_s` is deliberately not bundled (see above); `libz` is linked
+  by PyInstaller's bootloader. Both were present on the Red Hat 7 and 8 hosts tested; the CI `ldd`
+  step only checks that none is missing on its own runner, so a very minimal Linux image could
+  still lack one.
+- **Verified:** standalone zip built on Red Hat 8.10, installed and run on Red Hat 7.9 (glibc 2.17)
+  with a real MCP handshake of all 32 tools, installed with that host's own Python 3.8.5, and a
+  full real Diamond 3.14.0.75.0 compile with bitstream through it inside the `bwrap` sandbox from
+  the user guide. **Not verified:** Windows, GitHub's Ubuntu runners, any non-x86-64 machine.
+  Only the Linux build host's behaviour has been observed.
+- **PyInstaller built with the host Python was rejected, and that finding stands:** a build made
+  with the Red Hat 8 system Python needs glibc 2.28 (it bundles that Python's `libpython`, `libssl`,
+  `libreadline` and others) and fails on Red Hat 7 with `GLIBC_2.28 not found`. Using uv's managed
+  Python (a python-build-standalone build against glibc 2.17) is what makes the standalone zip
+  work there.
+- **`LICENSE` is a byte-for-byte copy of cortex-bridge's AI Solutions Software License Agreement**
+  (its own notice allows free distribution of the text if the copyright line is kept, and
+  forbids changing the terms), and both zips contain it. A test checks that it is the unmodified
+  text, and the standalone `BUILDINFO` records its SHA-256. Whether it is the approved text for
+  this product is for Legal (`LEGAL_REVIEW.txt` says so). Section 4 of the agreement points at
+  `THIRD_PARTY_LICENSES.txt`, which both zips ship. cortex-bridge also keeps a third-party licence
+  review file; it has not been reproduced here, and these builds do not check dependency licences
+  against a review list.
+- `python -m build` prints a deprecation warning that `project.license` as a TOML table is
+  deprecated (removal announced for 2027-02-18). The Radiant server has the same field.
+  When both move to setuptools 77 or later, use an SPDX expression such as
+  `LicenseRef-Lattice-Proprietary`.
 
 ## Validation status
 
