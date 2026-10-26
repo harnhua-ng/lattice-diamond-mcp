@@ -11,7 +11,7 @@ license = {text = "Proprietary"}
 requires-python = ">=3.11"
 keywords = ["mcp", "diamond", "fpga", "lattice", "ai"]
 dependencies = [
-    "mcp>=1.29.0,<2",
+    "mcp>=1.29.0,<3",
 ]
 
 [project.optional-dependencies]
