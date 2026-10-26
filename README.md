@@ -49,8 +49,17 @@ scripts/
     pyinstaller_entry.py the program PyInstaller freezes
     build_installer.py   builds the wheels installer zip (verifies it before writing)
     install.py           the installer that ships in both zips (standard library only)
+security_scan/
+    run_scans.py         runs every scan below; README.md lists the results and findings
+    secrets_scan.py      regular-expression secrets scan of the working tree
+    osv_check.py         checks the packages pinned in uv.lock against OSV.dev
+    dast_parsers.py      seeded fuzzing of the parsers and the Tcl quoting
+    dast_stdio.py        probes of the running server over stdio
+    results/             the scan output behind the README, before and after the fixes
 .github/workflows/
     build-dist.yml       builds and verifies both installers on Linux and Windows
+    security-scan.yml    unit tests and security_scan/run_scans.py on every push and weekly
+.github/dependabot.yml   update proposals for the pinned actions and for uv.lock
 uv.lock                  exact, hashed versions of every dependency (and of PyInstaller)
 pyproject.toml           packaging and pytest configuration
 ```
@@ -94,6 +103,8 @@ parsers are tested on real Diamond output kept in `tests/data`.
 
 `tests/test_stdio_server.py` launches `python -m diamond_mcp` as a subprocess and talks
 MCP to it over stdio, so the entry point, transport and tool schemas are covered.
+
+The security scans are separate: `python security_scan/run_scans.py` (see `security_scan/README.md`).
 
 Integration tests run against a real Diamond. They are skipped unless
 `DIAMOND_TEST_LDF` is set:
@@ -372,24 +383,27 @@ python scripts/build_installer.py      # writes dist/lattice-diamond-mcp-<versio
 ```
 
 The zip holds `install.py`, our wheel and every dependency wheel (about 30 wheels, 9.5 MB),
-`constraints.txt` with the exact versions built and tested, `BUILDINFO`, the licence texts
+`requirements.txt` (every wheel by exact version and SHA-256), `BUILDINFO`, the licence texts
 taken from the dependency wheels, and the user guide. A `.sha256` file is written beside it.
 Its installer path uses only the standard library, runs on Python 3.8 or later (a test enforces
-this), and installs with `pip install --no-index --find-links wheels -c constraints.txt`, so no
-network is used.
+this), and installs with `pip install --no-index --find-links wheels --require-hashes -r requirements.txt`,
+so no network is used and a wheel that was changed after the build is refused.
 
 What the build does:
 
 1. Builds the wheel with `python -m build`.
 2. Downloads dependency wheels with `pip download --only-binary=:all:` for the Python and
-   operating system that run the build. pip honours `PIP_INDEX_URL`, `PIP_FIND_LINKS`,
-   proxy variables and `pip.conf`.
-3. Writes `constraints.txt`, extracts licence files, and records the glibc floor (the
-   highest `manylinux` requirement among the wheels) in `BUILDINFO`.
-4. **Installs the bundle into a throwaway environment by running its own `install.py`**,
+   operating system that run the build, at the versions recorded in `uv.lock` (given to pip as
+   constraints). pip honours `PIP_INDEX_URL`, `PIP_FIND_LINKS`, proxy variables and `pip.conf`.
+3. Checks every downloaded wheel against the SHA-256 that `uv.lock` records for it, and stops
+   without writing anything if one differs or is not listed.
+4. Writes `requirements.txt` with the hash of every wheel, extracts licence files, and
+   records the glibc floor (the highest `manylinux` requirement among the wheels) and the
+   hash of `uv.lock` in `BUILDINFO`.
+5. **Installs the bundle into a throwaway environment by running its own `install.py`**,
    and fails if that does not work. `--skip-verify` bypasses this and must not be used for a
    release.
-5. Writes the zip and its checksum.
+6. Writes the zip and its checksum.
 
 One zip is built per Python version and per operating system, each on that system. Do not
 build for another platform from this one: pip evaluates dependency markers for the machine

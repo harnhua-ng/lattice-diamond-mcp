@@ -1,0 +1,178 @@
+{
+  "tool": "dast_parsers.py",
+  "src": "<scratch>/before/src",
+  "seed": 20261026,
+  "cases_per_target": 300,
+  "python": "3.11.7",
+  "targets": [
+    {
+      "target": "reports.parse_par",
+      "cases": 317,
+      "unexpected_exceptions": {},
+      "examples": {},
+      "slow_calls": [
+        {
+          "input": "marker then 100,000 spaces",
+          "seconds": 7.7
+        },
+        {
+          "input": "marker, key, spaces, no '='",
+          "seconds": 7.74
+        }
+      ],
+      "hangs": [],
+      "finding": true
+    },
+    {
+      "target": "reports.parse_twr",
+      "cases": 319,
+      "unexpected_exceptions": {},
+      "examples": {},
+      "slow_calls": [
+        {
+          "input": "one 1 MB number",
+          "seconds": 10.0
+        },
+        {
+          "input": "'Constraints cover' repeated on one line",
+          "seconds": 10.0
+        },
+        {
+          "input": "table header repeated, no end",
+          "seconds": 10.0
+        },
+        {
+          "input": "digits then 'Timing summary (Setup):'",
+          "seconds": 10.0
+        }
+      ],
+      "hangs": [
+        "one 1 MB number",
+        "'Constraints cover' repeated on one line",
+        "table header repeated, no end",
+        "digits then 'Timing summary (Setup):'"
+      ],
+      "finding": true
+    },
+    {
+      "target": "reports.parse_mrp",
+      "cases": 318,
+      "unexpected_exceptions": {},
+      "examples": {},
+      "slow_calls": [],
+      "hangs": [],
+      "finding": false
+    },
+    {
+      "target": "project.parse_ldf + find_missing_sources",
+      "cases": 316,
+      "unexpected_exceptions": {},
+      "examples": {},
+      "slow_calls": [],
+      "hangs": [],
+      "finding": false
+    },
+    {
+      "target": "config.load_config_data",
+      "cases": 314,
+      "unexpected_exceptions": {
+        "RecursionError": 1
+      },
+      "examples": {
+        "RecursionError": "100,000 '[' : maximum recursion depth exceeded while decoding a JSON array from a unicode string"
+      },
+      "slow_calls": [],
+      "hangs": [],
+      "finding": true
+    },
+    {
+      "target": "diamond_session.tcl_quote (checked with tclsh)",
+      "cases": 320,
+      "skipped": null,
+      "not_one_word": [
+        {
+          "input": "'\\x0b\\x0b @\\x01\\x1b0.\\r}\"~\\\\\\x00>-\ud83d\ude009'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'#0<X_-/\\x0c\\t=9\\nZ 9ZZ{Yb <`\\x7f\ud83d\ude00-YY\\r@#~/>~\\t\\u2028\\x00'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'\\x0b\\x01\\r:<\\\\>{-Z\\x01\\r0<>:X0X<]}\\x00\\ta&_&_\u4e2d1b\\u2028`'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'c:]\\r`/1\\r.{\\r:`Y/1~9\u00e9'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "\"1(Z.9\\r|\\r\\u2028'\\x01[<>b>$#\\x0c\\n$\\x0ca1\"",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'~>\\n\\r\\\\\"\u00e9\\u2028\\x010-<-|\u4e2d&1\"(\"\\u20280\\x7f@\u00e9\ud83d\ude00/\\x0b\u00e99\u00e9\\u2028$@\\'Za.'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'\\'0/\\'\"\\'\u4e2d][\\'.#9XX\\x0b0\u00e9(|; ;\\r\\'`.\\\\\"[\\x00<\\u20280. a_/'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'Y\"\\x00\\r0b~~\\r\\'09)$\\x7f ~'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "\"@\\x0c\\n\\x0b9Y{.a\\x0c]@\\x1b\\x01;.'\\r'}\\x00)\\x0c/1\\x01<_\\x00\\u2028a$(#\\n\\u2028\"",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'\\n##|;<-=#\\r1[a[:\\r\\x0b\\r'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'\\n\\t]\\r\\x0c\\x00}`c\\x1b<\\x01/\\n:}c'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'\\x1b{`\\r9$}{<\\tY&\\x0c'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'#=b|}\\r\\u202811a\u00e9/X\\x0c\\n\\n::Z#\\u2028&\\n/\\x0b(\\r\\n\\x00\\x0c[=9'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'Z)|\"\\'b1\u00e9|\\x7f\\n.>\"X~\\x0c\\r\\'\\x00\\x0c\\x0c\ud83d\ude00b:\\n&._a\\'<|{-(\\t'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'(\ud83d\ude00]@Z \\n;\"| \\n.ZX=;\\r$$\\t'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'\\x01ba\\x1b\\r0\\x0b\\n\\\\\u4e2d}:='",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "\"\\u2028\\x0b\\x00\\nX<c00#\\n'|@\\t$\\\\;\\n`\\r\\\\\"",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'=\\x1b>X$\\x0b`\\x0b|{|bYY\\t\\\\\\x00\\x0caa\\r99\\x0b'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'\\\\b\\x7f=(\u00e9={&/@c\\r=X}X{`]}.'",
+          "problem": "not a single word equal to the original"
+        },
+        {
+          "input": "'\u00e9a\ud83d\ude00)-\\\\\\r:&_:/\\u2028~\u00e9a\\\\|0\\x1b(X-c;\\t><Y\\u2028b'",
+          "problem": "not a single word equal to the original"
+        }
+      ],
+      "finding": true
+    }
+  ],
+  "findings": 4
+}

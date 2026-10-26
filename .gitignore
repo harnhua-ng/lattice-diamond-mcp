@@ -13,3 +13,4 @@ dist/
 .vscode/
 .idea/
 *.swp
+security_scan/out/

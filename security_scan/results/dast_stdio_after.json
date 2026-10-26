@@ -1,0 +1,205 @@
+{
+  "tool": "dast_stdio.py",
+  "src": "<repo>/src",
+  "python": "3.11.7",
+  "platform": "Linux-4.18.0-553.el8_10.x86_64-x86_64-with-glibc2.28",
+  "mcp": "1.30.0",
+  "diamond_mcp_imported_from": "<repo>/src/diamond_mcp/__init__.py",
+  "probes": 24,
+  "passed": 24,
+  "failed": 0,
+  "results": [
+    {
+      "group": "robustness",
+      "probe": "frame: invalid JSON",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.00 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: empty line",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.00 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: array instead of object",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.00 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: unknown method",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.01 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: params of the wrong type",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.00 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: tool name of the wrong type",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.01 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: object as request id",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.00 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: 50,000-deep nesting",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.00 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: 5,000-digit integer",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.00 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: 1 MB string argument",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.00 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: 100,000-element array",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.02 s"
+    },
+    {
+      "group": "robustness",
+      "probe": "frame: binary garbage",
+      "expected": "the server keeps answering",
+      "passed": true,
+      "skipped": false,
+      "evidence": "answered tools/list afterwards in 0.04 s"
+    },
+    {
+      "group": "files",
+      "probe": "read_report before any project is known",
+      "expected": "refused",
+      "passed": true,
+      "skipped": false,
+      "evidence": "read_report only reads files inside a project that has been opened or queried in this session. Open the project (open_pr"
+    },
+    {
+      "group": "files",
+      "probe": "read_report of the project's own report (control)",
+      "expected": "returned",
+      "passed": true,
+      "skipped": false,
+      "evidence": "PAR report of the project\n"
+    },
+    {
+      "group": "files",
+      "probe": "read_report of a .log outside the project",
+      "expected": "refused",
+      "passed": true,
+      "skipped": false,
+      "evidence": "read_report only reads files inside a project that has been opened or queried in this session. Open the project (open_pr"
+    },
+    {
+      "group": "files",
+      "probe": "read_report through a link that leads out of the project",
+      "expected": "refused",
+      "passed": true,
+      "skipped": false,
+      "evidence": "read_report only reads files inside a project that has been opened or queried in this session. Open the project (open_pr"
+    },
+    {
+      "group": "files",
+      "probe": "tail of a 30 MB log returns only the slice",
+      "expected": "100 characters, in reasonable time",
+      "passed": true,
+      "skipped": false,
+      "evidence": "returned 100 characters of 31457280 in 0.01 s"
+    },
+    {
+      "group": "program",
+      "probe": "start_diamond with an arbitrary program",
+      "expected": "refused, and the program does not run",
+      "passed": true,
+      "skipped": false,
+      "evidence": "The Diamond console must be a file named diamondc. For anything else an administrator sets DIAMOND_EXE or the config fil"
+    },
+    {
+      "group": "program",
+      "probe": "configure_diamond saving an arbitrary program",
+      "expected": "refused, and nothing saved",
+      "passed": true,
+      "skipped": false,
+      "evidence": "The Diamond console must be a file named diamondc. For anything else an administrator sets DIAMOND_EXE or the config fil"
+    },
+    {
+      "group": "config",
+      "probe": "diamond-mcp.json in the working directory",
+      "expected": "ignored",
+      "passed": true,
+      "skipped": false,
+      "evidence": "diamond_exe=/tools/dist/lattice/DIAMOND/3.14.0.75.0/diamond/sub/bin/lin64/diamondc audit_log=<scratch>/home/state/diamond-mcp/audit.log license_set=False config_file=None"
+    },
+    {
+      "group": "config",
+      "probe": "config file nested 200,000 levels deep",
+      "expected": "ignored; the tool still answers",
+      "passed": true,
+      "skipped": false,
+      "evidence": "success=True output='Diamond configuration.'"
+    },
+    {
+      "group": "xml",
+      "probe": "project file with a DTD and nested entities",
+      "expected": "refused as a DTD",
+      "passed": true,
+      "skipped": false,
+      "evidence": "success=False output='Project file declares a DTD or an entity; Diamond projects never do, so it was n' (0.00 s)"
+    },
+    {
+      "group": "network",
+      "probe": "--transport streamable-http",
+      "expected": "refused: no listener, non-zero exit",
+      "passed": true,
+      "skipped": false,
+      "evidence": "exit status 2, nothing listening"
+    },
+    {
+      "group": "network",
+      "probe": "--transport sse",
+      "expected": "refused: no listener, non-zero exit",
+      "passed": true,
+      "skipped": false,
+      "evidence": "exit status 2, nothing listening"
+    }
+  ]
+}

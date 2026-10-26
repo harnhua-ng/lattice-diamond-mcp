@@ -20,6 +20,10 @@ name: Build dist
 # can be reproduced on a laptop with the same commands the workflow runs. Both scripts test-install
 # their own zip before writing it; the verify jobs then install each zip on a FRESH runner.
 #
+# Every third-party action is pinned to a commit, not a tag: a tag can be moved to different code
+# after it has been reviewed. The comment after each pin names the version it was taken from;
+# Dependabot (.github/dependabot.yml) proposes the updates.
+#
 # Status: the shell steps of every job were executed on a Linux host and the file validates against
 # GitHub's workflow schema. The workflow itself has never run on GitHub, and the Windows legs have
 # never run anywhere. The first run is the first test of both.
@@ -70,14 +74,14 @@ jobs:
       REF: ${{ inputs.ref || 'main' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.REF }}
 
       # Only runs the build script. The Python that goes INTO the program is a separate,
       # uv-managed CPython pinned in the script, so this version does not affect the output.
       - name: Set up Python to run the build script
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -104,7 +108,7 @@ jobs:
         run: ls -la out
 
       - name: Upload the standalone installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lattice-diamond-mcp-standalone-${{ matrix.name }}
           path: |
@@ -147,12 +151,12 @@ jobs:
       REF: ${{ inputs.ref || 'main' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.REF }}
 
       - name: Download the installer
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: lattice-diamond-mcp-standalone-${{ matrix.name }}
           path: out
@@ -169,14 +173,14 @@ jobs:
       # The Python that runs install.py: the oldest it supports on one leg, a recent one on the others.
       - name: Set up the installer's Python
         id: installer
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.installer_python }}
 
       # The Python that runs the protocol check below (it needs 3.11 or later).
       - name: Set up Python for the protocol check
         id: checker
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
@@ -261,13 +265,13 @@ jobs:
       REF: ${{ inputs.ref || 'main' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.REF }}
 
       # The Python the zip is FOR: build_installer.py records it and the installer will look for it.
       - name: Set up Python ${{ matrix.python }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python }}
 
@@ -281,9 +285,10 @@ jobs:
           python -m build --version
           git --version
 
-      # Builds the wheel, downloads every dependency wheel for this Python and OS, writes the
-      # pinned constraints and licence texts, then installs the bundle into a throwaway
-      # environment with its own install.py. Fails, and writes nothing, if any of that fails.
+      # Builds the wheel, downloads every dependency wheel for this Python and OS at the versions in
+      # uv.lock, checks each against the SHA-256 recorded there, writes requirements.txt (hashes) and
+      # the licence texts, then installs the bundle into a throwaway environment with its own
+      # install.py (pip --require-hashes). Fails, and writes nothing, if any of that fails.
       - name: Build the wheels installer
         run: python scripts/build_installer.py --outdir out
 
@@ -291,7 +296,7 @@ jobs:
         run: ls -la out
 
       - name: Upload the wheels installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: lattice-diamond-mcp-wheels-${{ matrix.name }}-py${{ matrix.python }}
           path: |
@@ -325,12 +330,12 @@ jobs:
       REF: ${{ inputs.ref || 'main' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.REF }}
 
       - name: Download the installer
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: lattice-diamond-mcp-wheels-${{ matrix.name }}-py${{ matrix.python }}
           path: out
@@ -346,7 +351,7 @@ jobs:
 
       - name: Set up Python ${{ matrix.python }}
         id: py
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python }}
 

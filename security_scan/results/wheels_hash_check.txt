@@ -1,0 +1,35 @@
+Wheels installer, Linux x86_64, Python 3.11, built from the working tree on 2026-10-26.
+
+== build output (tail)
+Verifying: installing the bundle into a throwaway environment ...
+  install verified
+
+Built dist/lattice-diamond-mcp-0.1.0-cp311-linux-x86_64.zip
+  size:    9.6 MB
+  sha256:  8fe036b977160740e5fddfa7cdb62418066def3738f39b1816179af7185b54b6
+  python:  cp311   platform: linux-x86_64   glibc floor: 2.28   wheels: 30
+
+LICENSE (a byte-for-byte copy of the cortex-bridge text) is in the zip; Legal should confirm it is the approved text.
+
+== first lines of requirements.txt in the zip
+annotated-types==0.8.0 \
+    --hash=sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0
+anyio==4.15.1 \
+    --hash=sha256:6152fdbbf9a77fdec97731721bebf7c4c44f7c29b424b0065826173efc7ed101
+
+== install after one byte was appended to one dependency wheel
+--- install with a tampered wheel (pydantic_core-2.50.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl):
+Processing ./un/lattice-diamond-mcp-0.1.0/wheels/httpx-0.28.1-py3-none-any.whl
+Processing ./un/lattice-diamond-mcp-0.1.0/wheels/idna-3.20-py3-none-any.whl
+Processing ./un/lattice-diamond-mcp-0.1.0/wheels/jsonschema_specifications-2025.9.1-py3-none-any.whl
+Processing ./un/lattice-diamond-mcp-0.1.0/wheels/jsonschema-4.26.0-py3-none-any.whl
+Processing ./un/lattice-diamond-mcp-0.1.0/wheels/lattice_diamond_mcp-0.1.0-py3-none-any.whl
+Processing ./un/lattice-diamond-mcp-0.1.0/wheels/mcp-1.30.0-py3-none-any.whl
+Processing ./un/lattice-diamond-mcp-0.1.0/wheels/pycparser-3.11-py3-none-any.whl
+Processing ./un/lattice-diamond-mcp-0.1.0/wheels/pydantic_core-2.50.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+ERROR: THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE. If you have updated the package versions, please update the hashes. Otherwise, examine the package contents carefully; someone may have tampered with them.
+    pydantic-core==2.50.1 from file://bundle/lattice-diamond-mcp-0.1.0/wheels/pydantic_core-2.50.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (from -r requirements.txt (line 35)):
+        Expected sha256 8812592c85d0edf423f10eadcef42716d71e8219085ad9e85b775057b7306133
+             Got        3ce09f8a14163789802da2ff5741c09c6a974864cbe9cc2d9e48fc87e1e7f953
+
+install.py exit status: 1 (pip refused the install; see the error above)

@@ -1,0 +1,8 @@
+{
+  "tool": "OSV.dev /v1/querybatch",
+  "lock": "uv.lock",
+  "project": "lattice-diamond-mcp",
+  "runtime_packages": 27,
+  "build_only_packages": 18,
+  "findings": []
+}
