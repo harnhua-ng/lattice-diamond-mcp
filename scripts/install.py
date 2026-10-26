@@ -166,12 +166,14 @@ def prepare_venv(venv_dir, python_cmd, dry_run):
 
 def install_packages(venv_dir, info, dry_run):
     wheels = os.path.join(HERE, "wheels")
-    constraints = os.path.join(HERE, "constraints.txt")
+    requirements = os.path.join(HERE, "requirements.txt")
     if not dry_run and not os.path.isdir(wheels):
         raise InstallError("The wheels folder is missing next to install.py.")
-    say("Installing packages from %s (no network access is used)" % wheels)
+    if not dry_run and not os.path.isfile(requirements):
+        raise InstallError("requirements.txt is missing next to install.py. Run the installer from the unpacked zip.")
+    say("Installing packages from %s (no network access is used; every wheel is checked against its SHA-256)" % wheels)
     run([venv_python(venv_dir), "-m", "pip", "install", "--no-index", "--find-links", wheels,
-         "--disable-pip-version-check", "-c", constraints, "--upgrade", "lattice-diamond-mcp==" + info["version"]],
+         "--disable-pip-version-check", "--require-hashes", "--upgrade", "-r", requirements],
         dry_run)
 
 

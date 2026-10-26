@@ -62,12 +62,9 @@ def test_bundle_glibc_floor_is_the_highest_requirement():
     assert build.bundle_glibc_floor(["c-1-py3-none-any.whl"]) is None
 
 
-def test_constraints_are_sorted_normalised_and_exact():
-    text = build.constraints_text([
-        "Pydantic_Core-2.46.3-cp311-cp311-manylinux_2_17_x86_64.whl",
-        "anyio-4.15.1-py3-none-any.whl",
-    ])
-    assert text == "anyio==4.15.1\npydantic-core==2.46.3\n"
+def test_lock_constraints_are_sorted_normalised_and_exact():
+    locked = {("pydantic-core", "2.46.3"): {}, ("anyio", "4.15.1"): {}}
+    assert build.lock_constraints_text(locked) == "anyio==4.15.1\npydantic-core==2.46.3\n"
 
 
 def make_wheel(folder, filename, files):
@@ -76,6 +73,60 @@ def make_wheel(folder, filename, files):
         for name, content in files.items():
             archive.writestr(name, content)
     return path
+
+
+def lock_for(tmp_path, wheel):
+    return {("dep", "1.0"): {wheel.name: build.sha256_file(wheel)}}
+
+
+def test_the_real_lock_file_is_read_with_a_hash_for_every_wheel():
+    locked = build.load_lock(SCRIPTS.parent / "uv.lock")
+    assert any(name == "mcp" for name, _version in locked)
+    assert all(hashes and all(len(x) == 64 for x in hashes.values()) for hashes in locked.values())
+    assert ("lattice-diamond-mcp", "0.1.0") not in locked  # the project itself is built, not locked
+
+
+def test_wheels_that_match_the_lock_pass(tmp_path):
+    wheel = make_wheel(tmp_path, "dep-1.0-py3-none-any.whl", {"a": "1"})
+    make_wheel(tmp_path, "lattice_diamond_mcp-0.1.0-py3-none-any.whl", {"b": "2"})  # own wheel is not in the lock
+    build.check_wheels_against_lock(tmp_path, lock_for(tmp_path, wheel), "lattice_diamond_mcp-")
+
+
+def test_a_wheel_changed_after_locking_stops_the_build(tmp_path):
+    wheel = make_wheel(tmp_path, "dep-1.0-py3-none-any.whl", {"a": "1"})
+    locked = lock_for(tmp_path, wheel)
+    make_wheel(tmp_path, "dep-1.0-py3-none-any.whl", {"a": "tampered"})
+    with pytest.raises(build.BuildError, match="SHA-256 differs"):
+        build.check_wheels_against_lock(tmp_path, locked, "lattice_diamond_mcp-")
+
+
+@pytest.mark.parametrize("filename, message", [
+    ("other-2.0-py3-none-any.whl", "not in uv.lock"),
+    ("dep-1.0-cp311-cp311-win_amd64.whl", "lists no wheel of that name"),
+])
+def test_a_wheel_the_lock_does_not_list_stops_the_build(tmp_path, filename, message):
+    good = make_wheel(tmp_path, "dep-1.0-py3-none-any.whl", {"a": "1"})
+    locked = lock_for(tmp_path, good)
+    good.unlink()
+    make_wheel(tmp_path, filename, {"a": "1"})
+    with pytest.raises(build.BuildError, match=message):
+        build.check_wheels_against_lock(tmp_path, locked, "lattice_diamond_mcp-")
+
+
+def test_requirements_pin_every_wheel_by_hash(tmp_path):
+    first = make_wheel(tmp_path, "Pydantic_Core-2.46.3-cp311-cp311-manylinux_2_17_x86_64.whl", {"a": "1"})
+    second = make_wheel(tmp_path, "anyio-4.15.1-py3-none-any.whl", {"b": "2"})
+    text = build.requirements_text(tmp_path)
+    assert text == (
+        "anyio==4.15.1 \\\n    --hash=sha256:%s\n" % build.sha256_file(second)
+        + "pydantic-core==2.46.3 \\\n    --hash=sha256:%s\n" % build.sha256_file(first)
+    )
+
+
+def test_an_unreadable_lock_stops_the_build(tmp_path):
+    (tmp_path / "uv.lock").write_text("not [toml")
+    with pytest.raises(build.BuildError, match="Cannot read"):
+        build.load_lock(tmp_path / "uv.lock")
 
 
 def test_extract_licences_copies_files_and_flags_wheels_without_any(tmp_path):
@@ -307,7 +358,15 @@ def test_dry_run_install_touches_nothing(tmp_path, monkeypatch, capsys):
     assert install.main(["--dry-run", "--no-register", "--venv-dir", str(venv)]) == 0
     out = capsys.readouterr().out
     assert "[dry run]" in out and "pip install --no-index" in out
+    assert "--require-hashes" in out and "requirements.txt" in out and "constraints" not in out
     assert not venv.exists()
+
+
+def test_install_refuses_a_bundle_without_requirements(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "HERE", str(tmp_path))
+    (tmp_path / "wheels").mkdir()
+    with pytest.raises(install.InstallError, match="requirements.txt is missing"):
+        install.install_packages(str(tmp_path / "venv"), info(), dry_run=False)
 
 
 def test_installer_source_runs_on_old_pythons():
