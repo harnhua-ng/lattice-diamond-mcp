@@ -19,6 +19,10 @@ Two kinds of zip use this one script; BUILDINFO says which:
   binary   (built by build_binary.py) copies the self-contained diamond-mcp folder. No Python
            is needed to RUN the result; this script only needs any Python 3.8 or later.
 
+Either kind also comes as a COMBINED zip with a build for each operating system (and, for wheels, each
+Python version) in its own folder next to this script; the installer picks the folder that fits this
+machine and says which it chose.
+
 This file uses only the standard library and runs on Python 3.8 or later.
 """
 
@@ -55,6 +59,62 @@ def load_buildinfo(folder=None):
     except (OSError, ValueError) as exc:
         raise InstallError("Cannot read BUILDINFO next to install.py (%s). Run the installer "
                            "from the unpacked zip." % exc)
+
+
+def platform_matches(info):
+    wanted = info.get("platform", "")
+    return not wanted or wanted.startswith("windows" if IS_WINDOWS else "linux")
+
+
+def select_bundle(python=None):
+    """
+    Return (folder, BUILDINFO) of the build to install.
+
+    A single-platform zip has BUILDINFO next to this script. A combined zip has one folder per build, each
+    with its own BUILDINFO; the one for this operating system is used and, for wheels, the one whose Python
+    can be found (the running interpreter's version first, then newer to older), or the one that matches
+    the interpreter given with --python.
+    """
+    try:
+        return HERE, load_buildinfo()
+    except InstallError as missing:
+        found = []
+        for name in sorted(os.listdir(HERE)):
+            folder = os.path.join(HERE, name)
+            if os.path.isfile(os.path.join(folder, "BUILDINFO")):
+                try:
+                    found.append((folder, load_buildinfo(folder)))
+                except InstallError:
+                    continue
+        if not found:
+            raise missing
+    here = "windows" if IS_WINDOWS else "linux"
+    fitting = [(folder, info) for folder, info in found if platform_matches(info)]
+    if not fitting:
+        raise InstallError("This zip holds builds for %s but this machine is %s. Use the zip built for this operating system."
+                           % (", ".join(sorted({info.get("platform", "?") for _, info in found})), here))
+    if all(info.get("kind") == "binary" for _, info in fitting):
+        return fitting[0]
+    running = "%d.%d" % sys.version_info[:2]
+    ranked = sorted(fitting, key=lambda item: (item[1].get("python") != running,
+                                                [-int(part) for part in item[1].get("python", "0.0").split(".")]))
+    explicit = python
+    wanted_versions = []
+    for folder, info in ranked:
+        version = info.get("python", "")
+        wanted_versions.append(version)
+        if explicit:
+            if python_version_of([explicit]) == version:
+                return folder, info
+            continue
+        try:
+            find_python(version)
+            return folder, info
+        except InstallError:
+            continue
+    raise InstallError("This zip holds wheels for Python %s, and none of those was found on this machine. Install one of them%s."
+                       % (", ".join(wanted_versions), ", or pass the path of a matching interpreter with --python" if not explicit else
+                          "; the interpreter given with --python is not one of them"))
 
 
 # -------------------------------------------------------------- python lookup
@@ -108,7 +168,7 @@ def find_python(wanted, explicit=None):
 def check_platform(info):
     wanted = info.get("platform", "")
     here = "windows" if IS_WINDOWS else "linux"
-    if wanted and not wanted.startswith(here):
+    if not platform_matches(info):
         raise InstallError("This installer was built for %s but this machine is %s. Use the zip "
                            "built for this operating system." % (wanted, here))
     floor = info.get("min_glibc")
@@ -164,9 +224,10 @@ def prepare_venv(venv_dir, python_cmd, dry_run):
             handle.write("Created by the lattice-diamond-mcp installer. Safe to delete with --uninstall.\n")
 
 
-def install_packages(venv_dir, info, dry_run):
-    wheels = os.path.join(HERE, "wheels")
-    requirements = os.path.join(HERE, "requirements.txt")
+def install_packages(venv_dir, info, dry_run, folder=None):
+    folder = folder or HERE
+    wheels = os.path.join(folder, "wheels")
+    requirements = os.path.join(folder, "requirements.txt")
     if not dry_run and not os.path.isdir(wheels):
         raise InstallError("The wheels folder is missing next to install.py.")
     if not dry_run and not os.path.isfile(requirements):
@@ -202,10 +263,10 @@ def binary_server(install_dir):
     return os.path.join(install_dir, "diamond-mcp.exe" if IS_WINDOWS else "diamond-mcp")
 
 
-def install_binary_bundle(args, info):
+def install_binary_bundle(args, info, folder=None):
     """Copy the self-contained program folder into place and check that it starts. Returns its path."""
     install_dir = os.path.abspath(args.install_dir or default_install_dir())
-    source = os.path.join(HERE, "diamond-mcp")
+    source = os.path.join(folder or HERE, "diamond-mcp")
     server = binary_server(install_dir)
     say("Installing lattice-diamond-mcp %s (self-contained; no Python is needed to run it)." % info["version"])
     if not args.dry_run and not os.path.isfile(binary_server(source)):
@@ -325,20 +386,27 @@ def parse_args(argv):
     return parser.parse_args(argv)
 
 
-def install_wheel_bundle(args, info):
+def install_wheel_bundle(args, info, folder=None):
     wanted = info["python"]
     python_cmd = find_python(wanted, args.python)
     say("Installing lattice-diamond-mcp %s with Python %s (%s)." % (info["version"], wanted, " ".join(python_cmd)))
     venv_dir = os.path.abspath(args.venv_dir or default_venv_dir())
     prepare_venv(venv_dir, python_cmd, args.dry_run)
-    install_packages(venv_dir, info, args.dry_run)
+    install_packages(venv_dir, info, args.dry_run, folder)
     verify(venv_dir, info, args.dry_run)
     return venv_server(venv_dir)
 
 
-def do_install(args, info):
+def do_install(args, info, folder=None):
     check_platform(info)
-    server = install_binary_bundle(args, info) if info.get("kind") == "binary" else install_wheel_bundle(args, info)
+    if folder and os.path.abspath(folder) != os.path.abspath(HERE):
+        say("This zip has several builds; using the one for %s%s (%s)." % (
+            info.get("platform", "this machine"), ", Python " + info["python"] if info.get("kind") != "binary" and info.get("python") else "",
+            os.path.basename(folder)))
+    if info.get("kind") == "binary":
+        server = install_binary_bundle(args, info, folder)
+    else:
+        server = install_wheel_bundle(args, info, folder)
 
     say()
     registered = False
@@ -416,7 +484,8 @@ def main(argv=None):
         if args.uninstall:
             do_uninstall(args)
         else:
-            do_install(args, load_buildinfo())
+            folder, info = select_bundle(args.python)
+            do_install(args, info, folder)
     except InstallError as exc:
         print("\nERROR: %s" % exc, file=sys.stderr)
         return 1

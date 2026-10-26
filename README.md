@@ -48,6 +48,7 @@ scripts/
     diamond-mcp.spec     PyInstaller spec (drops host libgcc_s and the build tools)
     pyinstaller_entry.py the program PyInstaller freezes
     build_installer.py   builds the wheels installer zip (verifies it before writing)
+    combine_installers.py  joins the per-OS zips of one kind into one Windows + Linux package
     install.py           the installer that ships in both zips (standard library only)
 security_scan/
     run_scans.py         runs every scan below; README.md lists the results and findings
@@ -410,9 +411,48 @@ build for another platform from this one: pip evaluates dependency markers for t
 it runs on, so a Windows zip built on Linux would silently lack the Windows-only dependency
 (`pywin32`).
 
+### Combined packages (Windows and Linux in one zip)
+
+The **Build dist** workflow builds each kind on each operating system, then joins the zips of one kind
+into the packages to hand out, with `scripts/combine_installers.py`:
+
+```
+lattice-diamond-mcp-<version>-standalone-windows-linux-x86_64.zip     artifact lattice-diamond-mcp-combined-standalone
+lattice-diamond-mcp-<version>-wheels-windows-linux-<cpNN>[-<cpNN>].zip  artifact lattice-diamond-mcp-combined-wheels
+```
+
+```
+lattice-diamond-mcp-<version>/
+    install.py              one installer for every build
+    PACKAGES.txt            which folder is which build
+    windows-x86_64/         a complete per-platform bundle, as it was built   (standalone)
+    linux-x86_64/
+    windows-x86_64-cp311/   one folder per system and Python version         (wheels)
+    linux-x86_64-cp311/
+```
+
+Nothing inside a build is changed, so each folder's `BUILDINFO`, licences and SBOM still describe the
+files next to them, and Unix permissions are kept. The script refuses to write anything unless both
+operating systems are present, every input is the same kind, version and git commit, each system (and
+Python version) appears once, and every `install.py` is identical. By hand:
+
+```bash
+python scripts/combine_installers.py --kind standalone --outdir dist  <windows zip> <linux zip>
+python scripts/combine_installers.py --kind wheels     --outdir dist  <every wheels zip of both systems>
+```
+
+The combine jobs run only after every per-OS zip of their kind has built and been installed on a fresh
+runner, and each combined zip is itself installed on fresh Linux and Windows runners (and, for wheels,
+under every Python version it holds) before the workflow succeeds. The per-OS artifacts remain as
+intermediates. `tests/test_combine.py` covers the combining and the choice of folder; the Windows legs
+have never run (see "Things to know").
+
 ### What the installer does on the target machine
 
-`install.py` reads `BUILDINFO` and refuses a wrong operating system or a too-old glibc.
+`install.py` reads `BUILDINFO` and refuses a wrong operating system or a too-old glibc. In a combined
+zip it first chooses the build: the folder for this operating system and, for wheels, the one whose
+Python it can find (the running interpreter's version first, then newer to older; `--python` picks the
+folder for that interpreter's version). It prints which folder it chose.
 
 - **Standalone zip:** copies the `diamond-mcp` folder into `--install-dir` (default
   `~/diamond-mcp`) through a staging folder, so a failed copy never leaves a half-installed
@@ -446,7 +486,9 @@ and install the real bundles; they need network access and are skipped unless
 1. Update `version` in `pyproject.toml`; if dependencies changed, run `uv lock` and commit
    `uv.lock` (CI fails on a stale lock).
 2. Run `pytest`, `pytest -m integration` against a real Diamond, and the two opt-in tests above.
-3. Run the **Build dist** workflow, or `python scripts/build_binary.py` on each supported system.
+3. Run the **Build dist** workflow (its combined artifacts are the packages to release), or
+   `python scripts/build_binary.py` and `python scripts/build_installer.py` on each supported system
+   and then `scripts/combine_installers.py`.
 4. Add the approved `LICENSE` text (see below), and review `THIRD_PARTY_LICENSES.txt` and any
    build warning about packages without a licence file.
 5. Update the revision history in the user guide.

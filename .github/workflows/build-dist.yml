@@ -16,6 +16,18 @@ name: Build dist
 # Each zip is built on the operating system it is for: pip and uv resolve for the machine they run
 # on, so a Windows zip built on Linux would silently lack Windows-only dependencies.
 #
+# The per-OS zips are then COMBINED, once for each kind, into the packages to hand out:
+#
+#   lattice-diamond-mcp-<version>-standalone-windows-linux-x86_64.zip    (artifact lattice-diamond-mcp-combined-standalone)
+#   lattice-diamond-mcp-<version>-wheels-windows-linux-<cpNN>.zip        (artifact lattice-diamond-mcp-combined-wheels)
+#
+# A combined zip has one install.py and one folder per build; install.py picks the folder for the machine
+# it runs on. scripts/combine_installers.py builds it without changing anything inside a build, and
+# refuses to run unless both operating systems are present, from the same commit. A combined zip is only
+# made once every per-OS zip of its kind has built and installed on a fresh runner, and is itself
+# installed on fresh Linux and Windows runners before the workflow succeeds. The per-OS artifacts stay
+# available as intermediates.
+#
 # Everything that matters is in scripts/build_binary.py and scripts/build_installer.py, so a build
 # can be reproduced on a laptop with the same commands the workflow runs. Both scripts test-install
 # their own zip before writing it; the verify jobs then install each zip on a FRESH runner.
@@ -217,6 +229,138 @@ jobs:
           '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --uninstall --install-dir "$INSTALL_DIR"
           if [ -e "$INSTALL_DIR" ]; then echo "$INSTALL_DIR is still there" >&2; exit 1; fi
 
+  # Joins the Windows and Linux standalone zips into one package.
+  combine-standalone:
+    needs: [build-standalone, verify-standalone]
+    if: ${{ !cancelled() && needs.build-standalone.result == 'success' && needs.verify-standalone.result == 'success' }}
+    name: Combine the standalone zips (Windows + Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Download the Windows and Linux zips
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: lattice-diamond-mcp-standalone-*
+          merge-multiple: true
+          path: parts
+
+      - name: Check the checksums
+        run: |
+          ls -la parts
+          cd parts && sha256sum -c ./*.zip.sha256
+
+      # Stops, and writes nothing, if an operating system is missing, the zips come from different
+      # commits or versions, or their install.py files differ.
+      - name: Combine
+        run: |
+          python scripts/combine_installers.py --kind standalone --outdir out parts/lattice-diamond-mcp-*.zip
+          cp parts/*.cdx.json out/
+          ls -la out
+
+      - name: Upload the combined standalone package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lattice-diamond-mcp-combined-standalone
+          path: |
+            out/lattice-diamond-mcp-*.zip
+            out/lattice-diamond-mcp-*.zip.sha256
+            out/lattice-diamond-mcp-*.cdx.json
+          if-no-files-found: error
+
+  # Installs the combined zip the way a customer would, on a fresh runner of each operating system: the
+  # installer must choose the right folder, and the installed program must speak MCP.
+  verify-combined-standalone:
+    needs: combine-standalone
+    name: Verify combined standalone (${{ matrix.os }}, installer on Python ${{ matrix.installer_python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            installer_python: '3.8'
+          - os: ubuntu-24.04
+            installer_python: '3.13'
+          - os: windows-2022
+            installer_python: '3.8'
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Download the combined package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lattice-diamond-mcp-combined-standalone
+          path: out
+
+      - name: Check the checksum
+        run: cd out && sha256sum -c ./*.zip.sha256
+
+      - name: Unpack
+        run: |
+          mkdir unpacked
+          unzip -q out/lattice-diamond-mcp-*.zip -d unpacked
+          ls unpacked/*/
+          bundle=$(echo "$PWD"/unpacked/*/)
+          test -f "$bundle/install.py" && test -d "$bundle/windows-x86_64" && test -d "$bundle/linux-x86_64"
+
+      - name: Set up the installer's Python
+        id: installer
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.installer_python }}
+
+      - name: Set up Python for the protocol check
+        id: checker
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install with the installer's Python
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          install_dir=$(native "$RUNNER_TEMP/diamond-mcp")
+          '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --no-register --install-dir "$install_dir" | tee install.log
+          grep -q "several builds; using the one for ${{ runner.os == 'Windows' && 'windows' || 'linux' }}-x86_64" install.log
+          echo "INSTALL_DIR=$install_dir" >> "$GITHUB_ENV"
+
+      - name: Talk MCP to the installed program
+        run: |
+          exe="$INSTALL_DIR/diamond-mcp"
+          if [ -f "$exe.exe" ]; then exe="$exe.exe"; fi
+          '${{ steps.checker.outputs.python-path }}' scripts/build_binary.py --smoke-test "$exe"
+
+      - name: Uninstall
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --uninstall --install-dir "$INSTALL_DIR"
+          if [ -e "$INSTALL_DIR" ]; then echo "$INSTALL_DIR is still there" >&2; exit 1; fi
+
   # ---------------------------------------------------------------------------------- wheels
 
   # Turns the `wheels_python` choice into the list the two wheels jobs build and verify.
@@ -361,6 +505,129 @@ jobs:
           bundle=$(echo "$PWD"/unpacked/*/)
           venv_dir=$(native "$RUNNER_TEMP/diamond-mcp-venv")
           '${{ steps.py.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --no-register --venv-dir "$venv_dir"
+          echo "VENV_DIR=$venv_dir" >> "$GITHUB_ENV"
+
+      - name: Talk MCP to the installed server
+        run: |
+          exe="$VENV_DIR/bin/diamond-mcp"
+          if [ -f "$VENV_DIR/Scripts/diamond-mcp.exe" ]; then exe="$VENV_DIR/Scripts/diamond-mcp.exe"; fi
+          '${{ steps.py.outputs.python-path }}' scripts/build_binary.py --smoke-test "$exe"
+
+      - name: Uninstall
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          '${{ steps.py.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --uninstall --venv-dir "$VENV_DIR"
+          if [ -e "$VENV_DIR" ]; then echo "$VENV_DIR is still there" >&2; exit 1; fi
+
+  # Joins the Windows and Linux wheels zips (every Python version that was built) into one package.
+  combine-wheels:
+    needs: [build-wheels, verify-wheels]
+    if: ${{ !cancelled() && needs.build-wheels.result == 'success' && needs.verify-wheels.result == 'success' }}
+    name: Combine the wheels zips (Windows + Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Download the Windows and Linux zips
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: lattice-diamond-mcp-wheels-*
+          merge-multiple: true
+          path: parts
+
+      - name: Check the checksums
+        run: |
+          ls -la parts
+          cd parts && sha256sum -c ./*.zip.sha256
+
+      - name: Combine
+        run: |
+          python scripts/combine_installers.py --kind wheels --outdir out parts/lattice-diamond-mcp-*.zip
+          ls -la out
+
+      - name: Upload the combined wheels package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lattice-diamond-mcp-combined-wheels
+          path: |
+            out/lattice-diamond-mcp-*.zip
+            out/lattice-diamond-mcp-*.zip.sha256
+          if-no-files-found: error
+
+  # Installs the combined zip on a fresh runner of each operating system under each Python version it
+  # holds: install.py must pick the folder for that system and that Python, then the server must speak MCP.
+  verify-combined-wheels:
+    needs: [plan, combine-wheels]
+    name: Verify combined wheels (${{ matrix.name }}, Python ${{ matrix.python }})
+    if: ${{ !cancelled() && needs.combine-wheels.result == 'success' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+        python: ${{ fromJSON(needs.plan.outputs.pythons) }}
+        include:
+          - os: ubuntu-22.04
+            name: linux-x86_64
+          - os: windows-2022
+            name: windows-x86_64
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Download the combined package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lattice-diamond-mcp-combined-wheels
+          path: out
+
+      - name: Check the checksum
+        run: cd out && sha256sum -c ./*.zip.sha256
+
+      - name: Unpack
+        run: |
+          mkdir unpacked
+          unzip -q out/lattice-diamond-mcp-*.zip -d unpacked
+          ls unpacked/*/
+          bundle=$(echo "$PWD"/unpacked/*/)
+          test -f "$bundle/install.py" && test -d "$bundle/windows-x86_64-cp$(echo '${{ matrix.python }}' | tr -d .)" && test -d "$bundle/linux-x86_64-cp$(echo '${{ matrix.python }}' | tr -d .)"
+
+      - name: Set up Python ${{ matrix.python }}
+        id: py
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          venv_dir=$(native "$RUNNER_TEMP/diamond-mcp-venv")
+          '${{ steps.py.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --no-register --venv-dir "$venv_dir" | tee install.log
+          grep -q "using the one for ${{ matrix.name }}, Python ${{ matrix.python }}" install.log
           echo "VENV_DIR=$venv_dir" >> "$GITHUB_ENV"
 
       - name: Talk MCP to the installed server

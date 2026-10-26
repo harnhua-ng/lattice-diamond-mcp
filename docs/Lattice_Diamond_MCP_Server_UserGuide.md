@@ -231,6 +231,13 @@ have a reason not to.
 | Linux | glibc 2.17 or later, such as Red Hat Enterprise Linux 7 or later | glibc 2.28 or later, such as Red Hat 8 or later |
 | Disk space | about 90 MB while installing (zip 17 MB, unpacked 35 MB, installed 34 MB), about 34 MB afterwards | about 100 MB while installing, about 65 MB afterwards |
 
+Both kinds also come as a **combined package** that holds the Windows and the Linux build in one zip
+(`lattice-diamond-mcp-<version>-standalone-windows-linux-x86_64.zip`, and
+`lattice-diamond-mcp-<version>-wheels-windows-linux-cp311.zip`, which holds one build per Python version
+it covers). Install it exactly as described below: `install.py` picks the folder for your operating
+system (and, for the Python-packages kind, for a Python version it finds), prints which one it used,
+and installs from there. `PACKAGES.txt` in the zip lists the folders. Nothing else changes.
+
 Neither kind needs network access or a package index while installing. A Windows build is defined in
 the project's build workflow but has never been run, so no Windows zip has been tested; see
 "Requirements".
