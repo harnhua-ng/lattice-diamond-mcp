@@ -15,6 +15,8 @@ def clean_env(monkeypatch, tmp_path):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # The config file is found through DIAMOND_MCP_CONFIG; the working directory is not searched.
+    monkeypatch.setenv("DIAMOND_MCP_CONFIG", str(tmp_path / "diamond-mcp.json"))
     monkeypatch.setattr(discovery, "DEFAULT_ROOTS", ())
     monkeypatch.setattr(config, "discover_diamond_installations", discovery.discover_diamond_installations)
 
@@ -87,7 +89,7 @@ def test_diamond_exe_env_wins_over_config(tmp_path, monkeypatch):
     assert (resolved.path, resolved.source) == ("/from/env", "env")
 
 
-def test_diamond_exe_from_config_file_in_cwd(tmp_path):
+def test_diamond_exe_from_config_file(tmp_path):
     (tmp_path / "diamond-mcp.json").write_text(json.dumps({"diamond_exe": "/from/config"}))
     resolved = config.resolve_diamond_path()
     assert resolved.path == "/from/config"
@@ -146,6 +148,26 @@ def test_timeout_resolution(tmp_path, monkeypatch, env, cfg, expected):
     if cfg is not None:
         (tmp_path / "diamond-mcp.json").write_text(json.dumps({"timeout_seconds": cfg}))
     assert config.resolve_timeout() == expected
+
+
+def test_config_file_in_the_working_directory_is_not_read(tmp_path, monkeypatch):
+    """A project folder must not be able to choose the program that runs or switch the audit log off."""
+    monkeypatch.delenv("DIAMOND_MCP_CONFIG")
+    monkeypatch.delenv("DIAMOND_MCP_AUDIT_LOG", raising=False)
+    (tmp_path / "diamond-mcp.json").write_text(json.dumps(
+        {"diamond_exe": "/tmp/evil", "lm_license_file": "evil@host", "audit_log": "off", "timeout_seconds": 1}))
+    assert config.find_config_file() is None
+    assert str(tmp_path / "diamond-mcp.json") not in [str(p) for p in config.config_search_paths()]
+    assert config.resolve_diamond_path().path is None
+    assert config.resolve_lm_license_file() is None
+    assert config.resolve_audit_log_path().source == "default"
+    assert config.resolve_timeout() == config.DEFAULT_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("depth", [5_000, 200_000])
+def test_deeply_nested_config_file_is_ignored_not_a_crash(tmp_path, depth):
+    (tmp_path / "diamond-mcp.json").write_text("[" * depth + "]" * depth)
+    assert config.load_config_data() == {}
 
 
 def test_malformed_config_file_is_ignored(tmp_path):

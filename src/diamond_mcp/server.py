@@ -58,7 +58,7 @@ from .config import (
     save_config,
 )
 from .diamond_session import CommandResult, DiamondSession, SessionError, make_session, tcl_quote
-from .discovery import discover_diamond_installations, installations_to_dicts
+from .discovery import EXE_RELATIVE_PATHS, discover_diamond_installations, installations_to_dicts
 
 logger = logging.getLogger(__name__)
 
@@ -299,13 +299,89 @@ def _abs_path(path: str) -> str:
 
 def _current_project_path(project_path: Optional[str]) -> Optional[str]:
     if project_path:
-        return _abs_path(project_path)
+        path = _abs_path(project_path)
+        _allow_project_reports(path)
+        return path
     session = _get_session()
     return session.current_project
 
 
 def _force_flag(force: str) -> str:
     return {"none": "", "": "", "one": " -forceOne", "all": " -forceAll"}.get(force.lower(), None)
+
+
+# ---- which Diamond program the AI client may name ---------------------------------------------
+
+_CONSOLE_NAMES = frozenset(Path(rel).name.lower() for rel in EXE_RELATIVE_PATHS)
+
+
+def _console_path_problem(path: str) -> Optional[str]:
+    """
+    Return why `path` may not be used as the Diamond console, or None if it may.
+
+    start_diamond and configure_diamond take the path from the AI client, and configure_diamond
+    saves it for every later session, so only a file with the console's own name is accepted. An
+    operator who needs something else (a site wrapper script) sets DIAMOND_EXE, --diamond-exe or
+    the config file by hand; those are not restricted.
+    """
+    candidate = Path(path)
+    if candidate.name.lower() not in _CONSOLE_NAMES:
+        return ("The Diamond console must be a file named " + " or ".join(sorted(_CONSOLE_NAMES)) +
+                ". For anything else an administrator sets DIAMOND_EXE or the config file.")
+    if not candidate.is_file():
+        return f"Diamond executable not found: {path}"
+    return None
+
+
+# ---- which files read_report may open ---------------------------------------------------------
+
+_REPORT_ROOTS: set[Path] = set()
+_MAX_REPORT_FILE_BYTES = 256 * 1024 * 1024
+_READ_CHUNK_CHARS = 1 << 20
+
+
+def _allow_project_reports(project_path: str) -> None:
+    """Remember a project's folder, and its implementation folders, as places read_report may read."""
+    try:
+        info = prj.parse_ldf(project_path)
+    except prj.ProjectFileError:
+        return
+    base = Path(project_path).resolve().parent
+    _REPORT_ROOTS.add(base)
+    for impl in info["implementations"]:
+        impl_dir = (base / (impl["dir"] or impl["title"])).resolve()
+        if _is_within(impl_dir, base):  # a project file must not widen the readable area to / or ~
+            _REPORT_ROOTS.add(impl_dir)
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        Path(os.path.normcase(path)).relative_to(os.path.normcase(root))
+        return True
+    except ValueError:
+        return False
+
+
+def _read_window(path: Path, offset: int, limit: int, tail: bool) -> tuple[str, int, int]:
+    """Return (text, total_chars, start) for a window of a text file, reading it in chunks."""
+    total = 0
+    window = ""
+    pieces: list[str] = []
+    with open(path, encoding="utf-8", errors="replace") as handle:
+        while True:
+            chunk = handle.read(_READ_CHUNK_CHARS)
+            if not chunk:
+                break
+            if tail:
+                window = (window + chunk)[-limit:]
+            else:
+                lo, hi = max(offset - total, 0), min(offset + limit - total, len(chunk))
+                if lo < hi:
+                    pieces.append(chunk[lo:hi])
+            total += len(chunk)
+    if tail:
+        return window, total, max(0, total - limit)
+    return "".join(pieces), total, offset
 
 
 # =============================================================================
@@ -318,10 +394,14 @@ def start_diamond(exe_path: Optional[str] = None, timeout: Optional[float] = Non
     Start the Diamond Tcl console. Idempotent - a no-op when already running. Tools start it automatically, so this is only needed to pick a specific installation or timeout.
 
     Args:
-        exe_path: Override path to the Diamond console (diamondc on Linux, pnmainc.exe on Windows); defaults to DIAMOND_EXE, the config file, then auto-detection.
+        exe_path: Override path to the Diamond console; the file must be named diamondc (Linux) or pnmainc.exe (Windows). Defaults to DIAMOND_EXE, the config file, then auto-detection.
         timeout:  Default command timeout in seconds (default 3600).
     """
     session = _get_session()
+    if exe_path:
+        problem = _console_path_problem(exe_path)
+        if problem:
+            return _error_dict(problem)
     if exe_path and not session.is_running:
         session.diamond_exe = exe_path
     if timeout:
@@ -375,14 +455,16 @@ def configure_diamond(
     Save Diamond settings to the config file. Takes effect the next time the console starts (call stop_diamond first if it is running).
 
     Args:
-        diamond_exe:     Full path to the Diamond console executable.
+        diamond_exe:     Full path to the Diamond console executable (a file named diamondc, or pnmainc.exe on Windows).
         lm_license_file: License value (port@host or a license file path) passed as LM_LICENSE_FILE.
         timeout_seconds: Default command timeout in seconds.
     """
     if diamond_exe is None and lm_license_file is None and timeout_seconds is None:
         return _error_dict("Provide at least one of diamond_exe, lm_license_file or timeout_seconds.")
-    if diamond_exe is not None and not Path(diamond_exe).is_file():
-        return _error_dict(f"diamond_exe does not exist: {diamond_exe}")
+    if diamond_exe is not None:
+        problem = _console_path_problem(diamond_exe)
+        if problem:
+            return _error_dict(problem)
     target = save_config(diamond_exe, lm_license_file, timeout_seconds)
     note = " Stop and restart the session to apply." if _get_session().is_running else ""
     return _ok_dict(f"Saved configuration to {target}.{note}", config_file=str(target))
@@ -465,6 +547,7 @@ def open_project(project_path: str, implementation: Optional[str] = None) -> dic
         missing = prj.find_missing_sources(path)
     except prj.ProjectFileError as exc:
         return _error_dict(str(exc))
+    _allow_project_reports(path)
 
     try:
         _session, note = _ensure_no_project()
@@ -551,6 +634,7 @@ def create_project(
     response = _run(command)
     if response["success"]:
         _get_session().current_project = _abs_path(str(target_dir / f"{name}.ldf"))
+        _allow_project_reports(_get_session().current_project)
     if note:
         response["session_note"] = note
     return response
@@ -1040,7 +1124,7 @@ def read_report(file_path: str, offset: int = 0, max_chars: int = _MAX_REPORT_CH
     Read a text report or log file (.par, .twr, .mrp, .srr, .srf, .log, .rpt, .pad, .htm, ...). Use list_reports to find files.
 
     Args:
-        file_path: Path to the file.
+        file_path: Path to the file; it must be inside a project that was opened or queried in this session (the project folder or one of its implementation folders).
         offset:    Character offset to start from (ignored when tail is true).
         max_chars: Maximum characters to return (default and cap: 20000).
         tail:      Return the last max_chars characters instead.
@@ -1052,16 +1136,22 @@ def read_report(file_path: str, offset: int = 0, max_chars: int = _MAX_REPORT_CH
         )
     if not path.is_file():
         return _error_dict(f"File does not exist: {path}")
+    real = path.resolve()  # follows links, so a link inside a project cannot lead out of it
+    if not any(_is_within(real, root) for root in _REPORT_ROOTS):
+        return _error_dict(
+            "read_report only reads files inside a project that has been opened or queried in this "
+            "session. Open the project (open_project) or call list_reports with its project_path first."
+        )
+    if real.stat().st_size > _MAX_REPORT_FILE_BYTES:
+        return _error_dict(f"File is larger than {_MAX_REPORT_FILE_BYTES // (1024 * 1024)} MB and is not read.")
     limit = max(1, min(int(max_chars), _MAX_REPORT_CHARS))
-    text = path.read_text(encoding="utf-8", errors="replace")
-    start = max(0, len(text) - limit) if tail else max(0, int(offset))
-    chunk = text[start:start + limit]
+    chunk, total, start = _read_window(real, max(0, int(offset)), limit, tail)
     return _ok_dict(
         chunk,
-        total_chars=len(text),
+        total_chars=total,
         offset=start,
         returned_chars=len(chunk),
-        has_more=start + len(chunk) < len(text),
+        has_more=start + len(chunk) < total,
     )
 
 
@@ -1102,10 +1192,6 @@ def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(prog="diamond-mcp", description="MCP server for Lattice Diamond")
     parser.add_argument("--diamond-exe", help="Path to the Diamond console executable (overrides config).")
     parser.add_argument("--timeout", type=float, help="Default command timeout in seconds.")
-    parser.add_argument(
-        "--transport", choices=("stdio", "sse", "streamable-http"), default="stdio",
-        help="MCP transport (default: stdio).",
-    )
     parser.add_argument("--log-level", default="WARNING", help="Python logging level (default: WARNING).")
     args = parser.parse_args(argv)
 
@@ -1114,7 +1200,7 @@ def main(argv: Optional[list[str]] = None) -> None:
         os.environ["DIAMOND_EXE"] = args.diamond_exe
     if args.timeout:
         os.environ["DIAMOND_MCP_TIMEOUT"] = str(args.timeout)
-    mcp.run(transport=args.transport)
+    mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":

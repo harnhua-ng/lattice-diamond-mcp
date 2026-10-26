@@ -26,9 +26,13 @@ Audit log location (see audit.py), first match wins:
 
 Config file search order:
     1. DIAMOND_MCP_CONFIG environment variable (explicit path)
-    2. ./diamond-mcp.json in the current working directory
-    3. %APPDATA%/diamond-mcp/config.json  (Windows)
+    2. %APPDATA%/diamond-mcp/config.json  (Windows)
        ~/.config/diamond-mcp/config.json   (other platforms)
+
+    The current working directory is deliberately NOT searched. The config file chooses the
+    program that is run and can switch the audit log off, so it must come from the user's own
+    account or an explicit setting, not from whichever project folder the AI client happens to
+    be in.
 
 Config file schema (JSON, every field optional):
     {
@@ -54,7 +58,6 @@ from typing import Any, Optional
 
 from .discovery import EXE_RELATIVE_PATHS, discover_diamond_installations
 
-CONFIG_FILENAME = "diamond-mcp.json"
 USER_CONFIG_DIR = "diamond-mcp"
 USER_CONFIG_FILENAME = "config.json"
 DEFAULT_TIMEOUT_SECONDS = 3600.0
@@ -84,7 +87,6 @@ def config_search_paths() -> list[Path]:
     explicit = os.environ.get("DIAMOND_MCP_CONFIG", "").strip()
     if explicit:
         paths.append(Path(explicit))
-    paths.append(Path.cwd() / CONFIG_FILENAME)
     paths.append(_user_config_path())
     return paths
 
@@ -103,7 +105,7 @@ def load_config_data(config_file: Optional[Path] = None) -> dict[str, Any]:
         return {}
     try:
         data = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):  # RecursionError: JSON nested thousands deep
         return {}
     return data if isinstance(data, dict) else {}
 

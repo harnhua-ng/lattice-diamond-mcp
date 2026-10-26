@@ -42,6 +42,20 @@ def test_tcl_quote_round_trips_through_real_tcl(value):
     assert out == value
 
 
+CARRIAGE_RETURN_CASES = ["a\rb", "\r", "a\r\nb", "back\\slash\rand cr", "{\r}", "x\\\r", "\\\r-impl evil"]
+
+
+@pytest.mark.parametrize("value", CARRIAGE_RETURN_CASES)
+def test_tcl_quote_keeps_a_carriage_return_inside_one_word_when_read_from_a_file(value, tmp_path):
+    """The server hands Diamond a script FILE, and Tcl reads a bare CR in a file as a line break."""
+    script = tmp_path / "t.tcl"
+    script.write_bytes(
+        ("set words [list a %s b]\nputs [llength $words]\nputs -nonewline [lindex $words 1]\n" % tcl_quote(value)).encode("utf-8")
+    )
+    out = subprocess.run([shutil.which("tclsh"), str(script)], capture_output=True, check=True).stdout.decode("utf-8")
+    assert out == "3\n" + value
+
+
 def test_extract_flagged_lines_caps_output():
     lines = [f"ERROR - number {i}" for i in range(80)] + ["info line"]
     flagged = extract_flagged_lines(lines)

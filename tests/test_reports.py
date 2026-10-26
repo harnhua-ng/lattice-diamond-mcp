@@ -1,6 +1,9 @@
 """Tests for the report parsers, using trimmed excerpts of real Diamond 3.14 reports."""
 
+import time
 from pathlib import Path
+
+import pytest
 
 from diamond_mcp import reports
 
@@ -100,3 +103,35 @@ def test_parse_mrp_handles_pio_row_with_jtag_suffix():
 
 def test_parse_mrp_without_design_summary_is_empty():
     assert reports.parse_mrp("no summary") == {}
+
+
+# ------------------------------------------- crafted reports must not stall the server
+
+SLOW_INPUTS = [
+    (reports.parse_par, "PAR_SUMMARY::" + " " * 100_000),
+    (reports.parse_par, "PAR_SUMMARY::a" + " " * 100_000 + "x"),
+    (reports.parse_twr, "9" * 200_000),
+    (reports.parse_twr, "9" * 100_000 + "Timing summary (Setup):" + "-" * 100_000),
+    (reports.parse_twr, "Constraints cover 1 paths " * 40_000),
+    (reports.parse_twr, "Preference | Constraint| Actual|Levels\n-\n" * 25_000),
+    (reports.parse_mrp, "Design Summary\nA: " + "9" * 100_000 + " out of"),
+]
+
+
+@pytest.mark.parametrize("parse, text", SLOW_INPUTS, ids=[f"{p.__name__}-{i}" for i, (p, _) in enumerate(SLOW_INPUTS)])
+def test_a_crafted_report_is_parsed_in_linear_time(parse, text):
+    """Six of these took 8 s to over 15 s with the original patterns (quadratic backtracking); the parse_mrp one is a guard."""
+    started = time.monotonic()
+    assert isinstance(parse(text), dict)
+    assert time.monotonic() - started < 2.0
+
+
+def test_par_summary_lines_still_parse_with_odd_spacing():
+    text = "PAR_SUMMARY::Run status  =   Completed  \nPAR_SUMMARY::Number of   errors=0\nPAR_SUMMARY::= 5\nPAR_SUMMARY::no equals sign\n"
+    result = reports.parse_par(text)
+    assert result["run_status"] == "Completed" and result["errors"] == 0
+
+
+def test_verdict_counts_still_parse_after_the_digit_boundary_change():
+    text = 'Timing summary (Setup):\n-----\nTiming errors: 3  Score: 12\n3 preferences(marked by "*" above) not met.\n'
+    assert reports.parse_twr(text)["setup_preferences_not_met"] == 3

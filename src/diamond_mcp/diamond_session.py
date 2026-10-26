@@ -109,7 +109,9 @@ class CommandResult:
 
 def tcl_quote(value: str) -> str:
     """Quote a string as a single Tcl word."""
-    if value and not any(c in value for c in "{}\\") and not value.endswith("\\"):
+    # A carriage return is always escaped. Tcl reads a script file with a bare "\r" as a line break,
+    # so a backslash followed by one becomes a line continuation and splits the word in two.
+    if value and not any(c in value for c in "{}\\\r") and not value.endswith("\\"):
         return "{" + value + "}"
     out = []
     for ch in value:
@@ -118,6 +120,8 @@ def tcl_quote(value: str) -> str:
                 out.append("\\n")
             elif ch == "\t":
                 out.append("\\t")
+            elif ch == "\r":
+                out.append("\\r")
             else:
                 out.append("\\" + ch)
         else:

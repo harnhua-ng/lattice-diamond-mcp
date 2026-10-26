@@ -363,8 +363,10 @@ def test_summaries_fail_clearly_before_flow(ldf_project):
     assert "Run run_map first" in server.get_resource_usage(str(ldf_project))["output"]
 
 
-def test_read_report_pagination_and_tail(tmp_path):
-    report = tmp_path / "x.par"
+def test_read_report_pagination_and_tail(ldf_project):
+    server.list_reports(str(ldf_project))  # makes the project's folders readable
+    report = ldf_project.parent / "impl1" / "x.par"
+    report.parent.mkdir(exist_ok=True)
     report.write_text("0123456789" * 10)
     first = server.read_report(str(report), max_chars=30)
     assert first["output"] == "0123456789" * 3 and first["has_more"] and first["total_chars"] == 100
@@ -374,11 +376,12 @@ def test_read_report_pagination_and_tail(tmp_path):
     assert tail["output"] == "56789" + "0123456789" and not tail["has_more"]
 
 
-def test_read_report_refuses_other_file_types_and_missing_files(tmp_path):
-    secret = tmp_path / "id_rsa"
+def test_read_report_refuses_other_file_types_and_missing_files(ldf_project):
+    server.list_reports(str(ldf_project))
+    secret = ldf_project.parent / "id_rsa"
     secret.write_text("secret")
     assert not server.read_report(str(secret))["success"]
-    assert "does not exist" in server.read_report(str(tmp_path / "gone.par"))["output"]
+    assert "does not exist" in server.read_report(str(ldf_project.parent / "gone.par"))["output"]
 
 
 # -------------------------------------------------------------- environment
@@ -399,4 +402,4 @@ def test_check_environment_ready_with_fake_exe(monkeypatch, fake_exe):
 
 def test_configure_diamond_validates_input(tmp_path):
     assert not server.configure_diamond()["success"]
-    assert "does not exist" in server.configure_diamond(diamond_exe=str(tmp_path / "x"))["output"]
+    assert "not found" in server.configure_diamond(diamond_exe=str(tmp_path / "diamondc"))["output"]

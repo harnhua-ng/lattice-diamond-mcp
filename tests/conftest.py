@@ -37,6 +37,25 @@ def isolated_audit_log(tmp_path_factory, monkeypatch):
     return path
 
 
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path_factory, monkeypatch):
+    """No test may read or write the real user configuration."""
+    home = tmp_path_factory.mktemp("home")
+    for var in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_STATE_HOME", "DIAMOND_MCP_CONFIG"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home
+
+
+@pytest.fixture(autouse=True)
+def no_readable_report_roots():
+    """read_report may only read inside projects seen in the current test."""
+    server._REPORT_ROOTS.clear()
+    yield
+    server._REPORT_ROOTS.clear()
+
+
 @pytest.fixture(scope="session")
 def fake_exe() -> str:
     exe = FAKE_DIR / "fake_diamondc"

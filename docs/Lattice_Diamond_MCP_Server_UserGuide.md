@@ -374,9 +374,11 @@ Ask the assistant to run these tools:
 
 ### Setting it up through the config file
 
-Create `diamond-mcp.json` in the working directory of the server, or
-`~/.config/diamond-mcp/config.json` (`%APPDATA%\diamond-mcp\config.json` on Windows), or
-point `DIAMOND_MCP_CONFIG` at any file:
+Create `~/.config/diamond-mcp/config.json` (`%APPDATA%\diamond-mcp\config.json` on
+Windows), or point `DIAMOND_MCP_CONFIG` at any file. A `diamond-mcp.json` in the folder the
+server happens to run in is **not** read: the file chooses the program that is run and can
+switch the audit log off, so it has to come from your own account or an explicit setting,
+not from a project folder.
 
 ```json
 {
@@ -501,12 +503,12 @@ Optional parameters are shown in square brackets.
 
 | Tool | Parameters | Purpose |
 |---|---|---|
-| `start_diamond` | [exe_path], [timeout] | Start the console. Optional: tools start it automatically. |
+| `start_diamond` | [exe_path], [timeout] | Start the console. Optional: tools start it automatically. `exe_path` must be a file named `diamondc` (`pnmainc.exe` on Windows). |
 | `stop_diamond` | none | Stop the console. An open project is closed without saving. |
 | `get_session_status` | [log_lines] | Running state, Diamond version, open project, command counts, why the last console ended, and the console log tail. |
 | `detect_diamond_installations` | none | List installations found on this machine. |
 | `get_diamond_config` | none | Show the resolved executable and where it came from. Never shows the license value. |
-| `configure_diamond` | [diamond_exe], [lm_license_file], [timeout_seconds] | Save settings to the config file. Applies at the next console start. |
+| `configure_diamond` | [diamond_exe], [lm_license_file], [timeout_seconds] | Save settings to the config file. Applies at the next console start. `diamond_exe` must be a file named `diamondc` (`pnmainc.exe` on Windows); an administrator who needs another program, such as a site wrapper script, sets `DIAMOND_EXE` or edits the config file. |
 | `check_environment` | none | Check that Diamond can be started. |
 
 ### Project
@@ -562,7 +564,13 @@ to other devices or settings.
 
 `read_report` reads only report and log file types (`.par`, `.twr`, `.mrp`, `.srr`,
 `.srf`, `.log`, `.rpt`, `.pad`, `.drc`, `.txt`, `.htm`, `.html`, `.prf`, `.lpf`, `.sdc`,
-`.tcl`, `.ldf`).
+`.tcl`, `.ldf`), and only inside a project that has been opened or queried in the current
+session (`open_project`, `create_project`, `get_project_info`, `list_reports`,
+`get_timing_summary`, `get_resource_usage` or `compile_project`): the project folder and its
+implementation folders. A link that leads out of the project, or a file elsewhere on the
+machine, is refused. Files larger than 256 MB are not read. This limits what an AI client can
+read through this tool; `run_tcl` can still read any file the account can read, so it is a
+safeguard, not a sandbox (see the deployment guidance below).
 
 Timing units: PAR scores are in nanoseconds (`*_ns` keys) and timing-report scores are
 in picoseconds (`*_ps` keys).
@@ -818,9 +826,8 @@ include the `console_log_tail` and `last_exit` in your report.
 | `timeout_seconds` | Default command timeout. |
 | `audit_log` | Audit log file, or `"off"` to disable. |
 
-Config file search order: `DIAMOND_MCP_CONFIG`, then `diamond-mcp.json` in the working
-directory, then `~/.config/diamond-mcp/config.json` (`%APPDATA%\diamond-mcp\config.json`
-on Windows).
+Config file search order: `DIAMOND_MCP_CONFIG`, then `~/.config/diamond-mcp/config.json`
+(`%APPDATA%\diamond-mcp\config.json` on Windows). The working directory is not searched.
 
 ### Command-line options
 
@@ -828,8 +835,10 @@ on Windows).
 |---|---|
 | `--diamond-exe PATH` | Override the executable. |
 | `--timeout SECONDS` | Override the default timeout. |
-| `--transport {stdio,sse,streamable-http}` | MCP transport. Default: stdio. |
 | `--log-level LEVEL` | Server log level. Default: WARNING. |
+
+The server speaks MCP over standard input and output only. It has no network transport and
+opens no port, so there is nothing to authenticate and nothing for another machine to reach.
 
 ## Tcl commands used
 

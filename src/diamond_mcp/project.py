@@ -14,8 +14,10 @@ only after synthesis has started.
 from __future__ import annotations
 
 import os
-import xml.etree.ElementTree as ET
+# _load refuses any DTD or entity (_refuse_dtd) before a file is parsed, so Bandit's XML warnings do not apply.
+import xml.etree.ElementTree as ET  # nosec B405
 from pathlib import Path
+from xml.parsers import expat
 from typing import Optional
 
 # Source types that are not inputs to synthesis, map or PAR.
@@ -26,12 +28,49 @@ class ProjectFileError(ValueError):
     """The .ldf file is missing or is not a readable Diamond project."""
 
 
+class _EndOfProlog(Exception):
+    """Raised by the expat handler at the root element: nothing after it can be a DTD."""
+
+
+def _refuse_dtd(ldf: Path) -> None:
+    """
+    Raise ProjectFileError if the file declares a DTD or an entity.
+
+    A Diamond project never has either, and entity declarations are how XML "expansion bomb" files
+    are built. Expat does the check, so every encoding it understands is covered; the scan stops
+    at the root element, so it costs nothing on a real project.
+    """
+    def refuse(*_args):
+        raise ProjectFileError("Project file declares a DTD or an entity; Diamond projects never do, so it was not read.")
+
+    def stop(*_args):
+        raise _EndOfProlog
+
+    parser = expat.ParserCreate()
+    parser.StartDoctypeDeclHandler = refuse
+    parser.EntityDeclHandler = refuse
+    parser.StartElementHandler = stop
+    try:
+        with open(ldf, "rb") as handle:
+            while True:
+                chunk = handle.read(65536)
+                parser.Parse(chunk, not chunk)
+                if not chunk:
+                    return
+    except _EndOfProlog:
+        return
+    except expat.ExpatError:
+        return  # not well-formed XML: ET.parse reports it in its own words
+
+
 def _load(path: str) -> ET.Element:
     ldf = Path(path)
     if not ldf.is_file():
         raise ProjectFileError(f"Project file does not exist: {path}")
+    _refuse_dtd(ldf)
     try:
-        root = ET.parse(ldf).getroot()
+        # _refuse_dtd has just refused any DTD or entity.
+        root = ET.parse(ldf).getroot()  # nosec B314
     except ET.ParseError as exc:
         raise ProjectFileError(f"Project file is not valid XML: {exc}") from exc
     if root.tag != "BaliProject":

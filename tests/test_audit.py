@@ -265,7 +265,7 @@ def test_audit_path_honours_xdg_state_home(tmp_path, monkeypatch):
 
 
 def test_audit_path_from_env_and_config_priority(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DIAMOND_MCP_CONFIG", str(tmp_path / "diamond-mcp.json"))
     (tmp_path / "diamond-mcp.json").write_text(json.dumps({"audit_log": "/from/config.log"}))
     monkeypatch.setenv("DIAMOND_MCP_AUDIT_LOG", "/from/env.log")
     assert config.resolve_audit_log_path().path == "/from/env.log"
@@ -284,7 +284,7 @@ def test_audit_can_be_disabled_by_env(monkeypatch, value):
 @pytest.mark.parametrize("value", [False, "off", "none"])
 def test_audit_can_be_disabled_by_config(tmp_path, monkeypatch, value):
     monkeypatch.delenv("DIAMOND_MCP_AUDIT_LOG")
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("DIAMOND_MCP_CONFIG", str(tmp_path / "diamond-mcp.json"))
     (tmp_path / "diamond-mcp.json").write_text(json.dumps({"audit_log": value}))
     assert config.resolve_audit_log_path().source == "disabled-by-config"
 

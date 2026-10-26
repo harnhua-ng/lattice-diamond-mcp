@@ -32,8 +32,15 @@ def _number(text: str) -> Optional[float]:
 def parse_par(text: str) -> dict:
     """Parse the machine-readable PAR_SUMMARY block and the CPU/real time lines."""
     raw: dict[str, str] = {}
-    for match in re.finditer(r"^PAR_SUMMARY::(.+?)\s*=\s*(.*?)\s*$", text, re.MULTILINE):
-        raw[re.sub(r"\s+", " ", match.group(1)).strip()] = match.group(2)
+    # Split on the first "=" by hand: a regex with two open-ended gaps takes quadratic time on a
+    # long line of spaces, which a crafted report could use to stall the server.
+    for line in text.split("\n"):
+        if not line.startswith("PAR_SUMMARY::"):
+            continue
+        name, equals, value = line[len("PAR_SUMMARY::"):].partition("=")
+        name = re.sub(r"\s+", " ", name).strip()
+        if equals and name:
+            raw[name] = value.strip()
     if not raw:
         return {}
 
@@ -85,7 +92,8 @@ def parse_twr(text: str) -> dict:
             result.update(setup_errors=int(setup_only.group(1)), setup_score_ps=int(setup_only.group(2)))
 
     # The report prints one verdict per analysis, setup first, then hold.
-    verdicts = list(re.finditer(r"All preferences were met\.|(\d+) preferences?\(marked by \"\*\" above\) not met", text))
+    # (?<!\d): start only at the first digit of a run, or a long run of digits costs quadratic time.
+    verdicts = list(re.finditer(r"All preferences were met\.|(?<!\d)(\d+) preferences?\(marked by \"\*\" above\) not met", text))
     for label, match in zip(("setup", "hold"), verdicts):
         result[f"{label}_preferences_met"] = match.group(1) is None
         if match.group(1) is not None:
@@ -93,13 +101,17 @@ def parse_twr(text: str) -> dict:
 
     constraints = []
     pending = ""
-    table = re.search(
-        r"^Preference\s*\|\s*Constraint\|\s*Actual\|Levels\s*\n-+\n(.*?)\n-{20,}",
-        text,
-        re.MULTILINE | re.DOTALL,
-    )
-    if table:
-        for line in table.group(1).splitlines():
+    # The header and the end of the table are found in two steps: one pattern with a lazy gap
+    # between them is rescanned to the end of the file at every repeated header.
+    table_rows = None
+    header = re.search(r"^Preference\s*\|\s*Constraint\|\s*Actual\|Levels\s*\n-+\n", text, re.MULTILINE)
+    if header:
+        rest = text[header.end():]
+        end = re.search(r"\n-{20,}", rest)
+        if end:
+            table_rows = rest[:end.start()]
+    if table_rows is not None:
+        for line in table_rows.splitlines():
             cells = [c.strip() for c in line.split("|")]
             if len(cells) != 4 or not cells[0]:
                 continue
@@ -119,7 +131,7 @@ def parse_twr(text: str) -> dict:
             pending = ""
     if constraints:
         result["constraints"] = constraints
-    cover = re.search(r"Constraints cover (\d+) paths.*?\(([\d.]+)% coverage\)", text)
+    cover = re.search(r"Constraints cover (\d+) paths[^\n]{0,500}?\(([\d.]+)% coverage\)", text)
     if cover:
         result["constraint_coverage_percent"] = float(cover.group(2))
     return result
