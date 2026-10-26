@@ -1,11 +1,16 @@
-# Proposes updates for the GitHub Actions the workflows use (pinned by commit) and for the
-# dependencies recorded in uv.lock. Nothing is merged automatically.
+# Proposes updates for the GitHub Actions the workflows use (pinned by commit, all in one grouped
+# pull request) and for the dependencies recorded in uv.lock. Nothing is merged automatically.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    # One branch and one pull request for every action that has an update, instead of one each.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
   - package-ecosystem: uv
     directory: /
     schedule:
