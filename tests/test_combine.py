@@ -146,6 +146,21 @@ def test_different_installers_are_refused(inputs, tmp_path, capsys):
     assert "different install.py" in capsys.readouterr().err
 
 
+def test_installers_that_differ_only_in_line_endings_are_explained(inputs, tmp_path, capsys):
+    """What happened in CI: the Windows checkout converted install.py to CRLF."""
+    refuse(tmp_path, "standalone", [make_zip(inputs, "linux-x86_64", installer=b"# one\n# two\n"),
+                                    make_zip(inputs, "windows-x86_64", installer=b"# one\r\n# two\r\n")], "")
+    err = capsys.readouterr().err
+    assert "differ only in line endings" in err and ".gitattributes" in err and "SHA-256" in err
+
+
+def test_the_repository_pins_line_endings_so_every_checkout_has_the_same_bytes():
+    attributes = (SCRIPTS.parent / ".gitattributes").read_text()
+    assert "* text=auto eol=lf" in attributes
+    for binary in ("*.pdf", "*.zip", "*.whl", "*.exe"):
+        assert binary + " binary" in attributes
+
+
 def test_the_same_build_twice_is_refused(inputs, tmp_path, capsys):
     first = make_zip(inputs, "linux-x86_64")
     copy = inputs / "copy.zip"

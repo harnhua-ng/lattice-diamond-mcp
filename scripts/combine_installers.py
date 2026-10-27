@@ -87,7 +87,13 @@ def check_compatible(bundles):
                 raise CombineError("%s and %s differ in %s (%r and %r); combine builds of one commit only."
                                    % (Path(first_path).name, Path(path).name, field, first.get(field), info.get(field)))
         if installer != first_installer:
-            raise CombineError("%s and %s carry different install.py files." % (Path(first_path).name, Path(path).name))
+            hint = ""
+            if installer.replace(b"\r\n", b"\n") == first_installer.replace(b"\r\n", b"\n"):
+                hint = (" They differ only in line endings (CRLF against LF): one build was made from a checkout that converted"
+                        " them, so check that .gitattributes is in the commit that was built.")
+            raise CombineError("%s and %s carry different install.py files (SHA-256 %s and %s).%s" % (
+                Path(first_path).name, Path(path).name, hashlib.sha256(first_installer).hexdigest()[:12],
+                hashlib.sha256(installer).hexdigest()[:12], hint))
     seen = {}
     for path, _, info, _ in bundles:
         name = folder_name(info)
