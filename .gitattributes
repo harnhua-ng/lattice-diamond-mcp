@@ -1,0 +1,19 @@
+# Text files are stored and checked out with LF on every operating system.
+#
+# Without this, the Windows runner's Git (core.autocrlf=true) checks the files out with CRLF, and the
+# Windows zip then differs from the Linux zip in install.py (so the two cannot be combined), in LICENSE
+# (a byte-for-byte copy of an approved text, whose SHA-256 is recorded in BUILDINFO) and in uv.lock
+# (whose SHA-256 is recorded in BUILDINFO and the SBOM).
+* text=auto eol=lf
+
+# Never touched by line-ending conversion.
+*.pdf binary
+*.zip binary
+*.whl binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.so binary
