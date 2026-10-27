@@ -60,7 +60,6 @@ security_scan/
 .github/workflows/
     build-dist.yml       builds and verifies both installers on Linux and Windows
     security-scan.yml    unit tests and security_scan/run_scans.py on every push and weekly
-.github/dependabot.yml   update proposals for the pinned actions and for uv.lock
 uv.lock                  exact, hashed versions of every dependency (and of PyInstaller)
 pyproject.toml           packaging and pytest configuration
 ```
@@ -481,6 +480,24 @@ refusal, dry-run, uninstall and failed-start cases against a fake `claude`. Two 
 and install the real bundles; they need network access and are skipped unless
 `DIAMOND_TEST_INSTALLER=1` (wheels) or `DIAMOND_TEST_BINARY=1` (standalone, also needs uv).
 
+### Updating pinned actions and dependencies
+
+Nothing updates these automatically; the pins are in git and change only when someone changes them.
+
+- **Actions** are pinned to commit SHAs in `.github/workflows/*.yml`, with the version in a comment.
+  To update one, look up the commit of the new tag and replace the SHA and the comment in every place the
+  action is used (`grep -rn "actions/checkout@" .github`):
+
+  ```bash
+  git ls-remote https://github.com/actions/checkout refs/tags/v7.0.1 'refs/tags/v7.0.1^{}'
+  ```
+
+  Use the `^{}` line when there is one (an annotated tag); otherwise the first. Then run the workflow.
+- **Python dependencies** are pinned with hashes in `uv.lock`: `uv lock --upgrade-package <name>` (or
+  `uv lock --upgrade`), then the tests, the scans and a build. The weekly **Security scan** workflow reports an advisory against
+  a locked package, so a vulnerable pin is flagged without anyone looking; a merely old one is not.
+  Nothing flags an action pin that has gone stale, so check them now and then, and before a release.
+
 ### Releasing
 
 1. Update `version` in `pyproject.toml`; if dependencies changed, run `uv lock` and commit
@@ -489,7 +506,7 @@ and install the real bundles; they need network access and are skipped unless
 3. Run the **Build dist** workflow (its combined artifacts are the packages to release), or
    `python scripts/build_binary.py` and `python scripts/build_installer.py` on each supported system
    and then `scripts/combine_installers.py`.
-4. Add the approved `LICENSE` text (see below), and review `THIRD_PARTY_LICENSES.txt` and any
+4. Check for newer pinned actions and dependencies (see above), add the approved `LICENSE` text (see below), and review `THIRD_PARTY_LICENSES.txt` and any
    build warning about packages without a licence file.
 5. Update the revision history in the user guide.
 

@@ -33,8 +33,8 @@ name: Build dist
 # their own zip before writing it; the verify jobs then install each zip on a FRESH runner.
 #
 # Every third-party action is pinned to a commit, not a tag: a tag can be moved to different code
-# after it has been reviewed. The comment after each pin names the version it was taken from;
-# Dependabot (.github/dependabot.yml) proposes the updates.
+# after it has been reviewed. The comment after each pin names the version it was taken from. Nothing
+# updates the pins automatically; README.md ("Updating pinned actions and dependencies") says how.
 #
 # Status: the shell steps of every job were executed on a Linux host and the file validates against
 # GitHub's workflow schema. The workflow itself has never run on GitHub, and the Windows legs have

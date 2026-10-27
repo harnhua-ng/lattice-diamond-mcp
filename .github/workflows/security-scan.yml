@@ -4,8 +4,8 @@ name: Security scan
 # of uv.lock, seeded fuzzing of the parsers, and dynamic probes of the running server). The same
 # command works on a laptop: python security_scan/run_scans.py. The results are uploaded as an artifact.
 #
-# Third-party actions are pinned to a commit; the comment after each pin names the version. Dependabot
-# (.github/dependabot.yml) proposes updates.
+# Third-party actions are pinned to a commit; the comment after each pin names the version. Nothing
+# updates them automatically; README.md ("Updating pinned actions and dependencies") says how.
 #
 # Status: the commands in the steps were run on a Linux host. The workflow itself has never run on GitHub.
 
