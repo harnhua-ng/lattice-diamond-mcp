@@ -47,6 +47,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -340,16 +341,17 @@ def build_executable(uv, work, dist):
     return bundle, env
 
 
-def mcp_smoke_test(exe):
-    """Run the program and speak MCP to it over stdio. Returns the tool names."""
+def mcp_smoke_test(exe, args=()):
+    """Run the program (with `args`, for `python -I -m diamond_mcp`) and speak MCP to it over stdio. Returns the tool names."""
     env = clean_env(DIAMOND_MCP_AUDIT_LOG="off")
     env.pop("DIAMOND_EXE", None)
-    help_text = run([str(exe), "--help"], env=env)
+    command = [str(exe)] + list(args)
+    help_text = run(command + ["--help"], env=env)
     if "diamond-mcp" not in help_text:
         raise BuildError("--help did not describe diamond-mcp:\n" + help_text)
 
     errors = tempfile.TemporaryFile("w+")
-    proc = subprocess.Popen([str(exe)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, env=env)
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors, text=True, env=env)
     watchdog = threading.Timer(SMOKE_TIMEOUT_S, proc.kill)  # a hung program must not hang the build
     watchdog.start()
 
@@ -569,11 +571,14 @@ def main(argv=None):
     parser.add_argument("--skip-verify", action="store_true", help="Do not test-install the finished zip (not for releases).")
     parser.add_argument("--smoke-test", metavar="PROGRAM",
                         help="Only talk MCP to an existing diamond-mcp program (for example an installed one) and exit.")
+    parser.add_argument("--smoke-test-args", metavar="ARGS", default="",
+                        help='Arguments to start PROGRAM with, as one string; write it with an equals sign, for example '
+                             '--smoke-test-args="-I -m diamond_mcp" to test a Python environment.')
     args = parser.parse_args(argv)
 
     if args.smoke_test:
         try:
-            log("MCP smoke test passed (%d tools)" % len(mcp_smoke_test(Path(args.smoke_test))))
+            log("MCP smoke test passed (%d tools)" % len(mcp_smoke_test(Path(args.smoke_test), shlex.split(args.smoke_test_args))))
         except BuildError as exc:
             print("\nSMOKE TEST FAILED: %s" % exc, file=sys.stderr)
             return 1

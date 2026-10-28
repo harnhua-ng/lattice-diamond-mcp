@@ -400,15 +400,18 @@ Every field is optional. Do not commit a license value to a shared repository.
 ## Register the server with your AI client
 
 `install.py` registers the server with Claude Code for you. This section is for registering by
-hand, or with another client. Use the path of the server program your installer reported: with
-the standalone zip it is `~/diamond-mcp/diamond-mcp`, with the Python-packages zip it is
-`~/diamond-mcp-venv/bin/diamond-mcp`. The examples below use the second; substitute the first
-if you installed the standalone zip.
+hand, or with another client. Use the command your installer reported. With the standalone zip it
+is the program `~/diamond-mcp/diamond-mcp`. With the Python-packages zip no program is installed:
+the server is the environment's Python running the module, `~/diamond-mcp-venv/bin/python -I -m diamond_mcp`
+(`%USERPROFILE%\diamond-mcp-venv\Scripts\python.exe -I -m diamond_mcp` on Windows). The `-I` makes
+Python ignore `PYTHONPATH` and the current folder, so a project folder cannot supply a module of its
+own in place of the server's. The examples below use the second; substitute the first if you
+installed the standalone zip.
 
 ### Claude Code
 
 ```bash
-claude mcp add --scope user diamond -- ~/diamond-mcp-venv/bin/diamond-mcp
+claude mcp add --scope user diamond -- ~/diamond-mcp-venv/bin/python -I -m diamond_mcp
 ```
 
 To pass settings at registration time, add environment variables with `-e`:
@@ -417,7 +420,7 @@ To pass settings at registration time, add environment variables with `-e`:
 claude mcp add --scope user diamond \
     -e DIAMOND_EXE=/opt/lattice/diamond/3.14.0.75.0/bin/lin64/diamondc \
     -e LM_LICENSE_FILE=1234@license-server \
-    -- ~/diamond-mcp-venv/bin/diamond-mcp
+    -- ~/diamond-mcp-venv/bin/python -I -m diamond_mcp
 ```
 
 `--scope user` makes the server available in every project and stores the entry outside
@@ -447,7 +450,8 @@ Any MCP client that can launch a stdio server works. A typical entry is:
 {
     "mcpServers": {
         "diamond": {
-            "command": "/home/you/diamond-mcp-venv/bin/diamond-mcp",
+            "command": "/home/you/diamond-mcp-venv/bin/python",
+            "args": ["-I", "-m", "diamond_mcp"],
             "env": {
                 "DIAMOND_EXE": "/opt/lattice/diamond/3.14.0.75.0/bin/lin64/diamondc"
             }
@@ -742,7 +746,7 @@ bwrap \
   --bind "$STATE" "$STATE" \
   --setenv DIAMOND_MCP_AUDIT_LOG "$STATE/audit.log" \
   --unshare-pid --unshare-ipc --unshare-uts --die-with-parent --new-session \
-  "$HOME/diamond-mcp-venv/bin/diamond-mcp"
+  "$HOME/diamond-mcp-venv/bin/python" -I -m diamond_mcp
 ```
 
 With the **standalone** zip, replace the two `diamond-mcp-venv` lines with the program folder and
@@ -772,7 +776,7 @@ What each part does:
 To use it from Claude Code, register the whole command:
 
 ```bash
-claude mcp add --scope user diamond -- bwrap <options as above> "$HOME/diamond-mcp-venv/bin/diamond-mcp"
+claude mcp add --scope user diamond -- bwrap <options as above> "$HOME/diamond-mcp-venv/bin/python" -I -m diamond_mcp
 ```
 
 Anything written to the private `/tmp` or the hidden home disappears when the sandbox ends.

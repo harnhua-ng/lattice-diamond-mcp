@@ -15,7 +15,9 @@ Two kinds of zip use this one script; BUILDINFO says which:
   wheels   (built by build_installer.py) installs the packages in wheels/ with pip, with no
            network, into its own virtual environment. It needs the Python version the zip was
            built for; the running interpreter may be older, in which case a suitable one is
-           looked for.
+           looked for. No program of ours is installed: the server is started as
+           `<environment>/python -I -m diamond_mcp` (-I so that a folder the client happens to
+           run in cannot shadow a module).
   binary   (built by build_binary.py) copies the self-contained diamond-mcp folder. No Python
            is needed to RUN the result; this script only needs any Python 3.8 or later.
 
@@ -39,6 +41,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 IS_WINDOWS = os.name == "nt"
 MARKER = ".diamond-mcp-installer"
 DEFAULT_NAME = "diamond"
+# How the wheels install starts the server, after the environment's python.
+WHEELS_SERVER_ARGS = ["-I", "-m", "diamond_mcp"]
 
 
 class InstallError(Exception):
@@ -192,7 +196,8 @@ def venv_python(venv_dir):
     return os.path.join(venv_dir, "Scripts" if IS_WINDOWS else "bin", "python.exe" if IS_WINDOWS else "python")
 
 
-def venv_server(venv_dir):
+def legacy_launcher(venv_dir):
+    """The launcher earlier wheels installs registered; it is no longer installed."""
     return os.path.join(venv_dir, "Scripts" if IS_WINDOWS else "bin", "diamond-mcp.exe" if IS_WINDOWS else "diamond-mcp")
 
 
@@ -234,7 +239,7 @@ def install_packages(venv_dir, info, dry_run, folder=None):
         raise InstallError("requirements.txt is missing next to install.py. Run the installer from the unpacked zip.")
     say("Installing packages from %s (no network access is used; every wheel is checked against its SHA-256)" % wheels)
     run([venv_python(venv_dir), "-m", "pip", "install", "--no-index", "--find-links", wheels,
-         "--disable-pip-version-check", "--require-hashes", "--upgrade", "-r", requirements],
+         "--disable-pip-version-check", "--require-hashes", "--upgrade", "--force-reinstall", "-r", requirements],
         dry_run)
 
 
@@ -245,9 +250,12 @@ def verify(venv_dir, info, dry_run):
     python = venv_python(venv_dir)
     run([python, "-m", "pip", "check"])
     run([python, "-c", "import diamond_mcp, mcp"], quiet=True)
-    help_run = run([venv_server(venv_dir), "--help"], quiet=True)
+    help_run = run([python] + WHEELS_SERVER_ARGS + ["--help"], quiet=True)
     if "diamond-mcp" not in help_run.stdout:
-        raise InstallError("The installed diamond-mcp command did not behave as expected.")
+        raise InstallError("The installed server did not behave as expected.")
+    if os.path.exists(legacy_launcher(venv_dir)):
+        raise InstallError("%s is still there; this installer installs no launcher program. Remove the environment "
+                           "and run the installer again." % legacy_launcher(venv_dir))
     version = run([python, "-c", "from importlib.metadata import version; print(version('lattice-diamond-mcp'))"],
                   quiet=True).stdout.strip()
     if version != info["version"]:
@@ -327,32 +335,38 @@ def registered_command(claude, name):
     return result.stdout if result.returncode == 0 else None
 
 
-def register(claude, name, scope, server, diamond_exe, dry_run):
+def register(claude, name, scope, server, diamond_exe, dry_run, server_args=(), replaces=()):
+    """Register `server` (plus `server_args`) with Claude Code. `replaces` are program paths an earlier
+    version of this installer registered for the same installation; such a registration is replaced."""
     existing = None if dry_run else registered_command(claude, name)
     if existing is not None:
         if server in existing:
             say("Already registered with Claude Code as '%s'." % name)
             return True
-        raise InstallError(
-            "A server named '%s' is already registered with Claude Code and does not point to this "
-            "installation. Remove it yourself (claude mcp remove %s) or choose another name with --name."
-            % (name, name))
+        if any(old in existing for old in replaces):
+            say("Replacing the registration '%s' made by an earlier install of this program." % name)
+            run([claude, "mcp", "remove", name, "--scope", scope], check=False)
+        else:
+            raise InstallError(
+                "A server named '%s' is already registered with Claude Code and does not point to this "
+                "installation. Remove it yourself (claude mcp remove %s) or choose another name with --name."
+                % (name, name))
     # The name must precede -e: -e accepts several values and would swallow it.
     command = [claude, "mcp", "add", "--scope", scope, name]
     if diamond_exe:
         command += ["-e", "DIAMOND_EXE=" + diamond_exe]
-    command += ["--", server]
+    command += ["--", server] + list(server_args)
     run(command, dry_run)
     say("Registered with Claude Code as '%s' (scope: %s)." % (name, scope))
     return True
 
 
-def unregister(claude, name, scope, server, dry_run):
+def unregister(claude, name, scope, server, dry_run, replaces=()):
     existing = None if dry_run else registered_command(claude, name)
     if existing is None and not dry_run:
         say("Not registered with Claude Code under the name '%s'." % name)
         return
-    if not dry_run and server not in existing:
+    if not dry_run and server not in existing and not any(old in existing for old in replaces):
         say("The server '%s' registered with Claude Code is not from this installation; leaving it alone." % name)
         return
     run([claude, "mcp", "remove", name, "--scope", scope], dry_run, check=False)
@@ -394,7 +408,7 @@ def install_wheel_bundle(args, info, folder=None):
     prepare_venv(venv_dir, python_cmd, args.dry_run)
     install_packages(venv_dir, info, args.dry_run, folder)
     verify(venv_dir, info, args.dry_run)
-    return venv_server(venv_dir)
+    return venv_python(venv_dir)
 
 
 def do_install(args, info, folder=None):
@@ -404,9 +418,10 @@ def do_install(args, info, folder=None):
             info.get("platform", "this machine"), ", Python " + info["python"] if info.get("kind") != "binary" and info.get("python") else "",
             os.path.basename(folder)))
     if info.get("kind") == "binary":
-        server = install_binary_bundle(args, info, folder)
+        server, server_args, replaces = install_binary_bundle(args, info, folder), [], []
     else:
-        server = install_wheel_bundle(args, info, folder)
+        server, server_args = install_wheel_bundle(args, info, folder), WHEELS_SERVER_ARGS
+        replaces = [legacy_launcher(os.path.dirname(os.path.dirname(server)))]
 
     say()
     registered = False
@@ -417,15 +432,15 @@ def do_install(args, info, folder=None):
         if claude is None:
             say("The claude command was not found, so the server was not registered.")
         else:
-            registered = register(claude, args.name, args.scope, server, args.diamond_exe, args.dry_run)
+            registered = register(claude, args.name, args.scope, server, args.diamond_exe, args.dry_run, server_args, replaces)
 
     say()
     say("Done. The server command is:")
-    say("  " + server)
+    say("  " + " ".join([server] + server_args))
     if not registered:
         say()
         say("To register it with Claude Code later:")
-        say("  claude mcp add --scope user %s -- %s" % (args.name, shlex.quote(server)))
+        say("  claude mcp add --scope user %s -- %s" % (args.name, " ".join(shlex.quote(part) for part in [server] + server_args)))
         say("For another MCP client, use that command as a stdio server.")
     say()
     say("Next: restart your AI client, then ask it to run check_environment for the Diamond server.")
@@ -454,9 +469,10 @@ def do_uninstall(args):
     for kind, directory in uninstall_targets(args):
         if not explicit and not os.path.isdir(directory):
             continue
-        server = binary_server(directory) if kind == "binary" else venv_server(directory)
+        server = binary_server(directory) if kind == "binary" else venv_python(directory)
         if claude is not None:
-            unregister(claude, args.name, args.scope, server, args.dry_run)
+            unregister(claude, args.name, args.scope, server, args.dry_run,
+                       replaces=[] if kind == "binary" else [legacy_launcher(directory)])
         marker = os.path.join(directory, MARKER)
         if not os.path.isdir(directory):
             say("Nothing installed at %s." % directory)

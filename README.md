@@ -86,7 +86,9 @@ source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[test]"
 ```
 
-The editable install provides the `diamond-mcp` command and `python -m diamond_mcp`.
+The editable install provides `python -m diamond_mcp`. There is no `diamond-mcp` command: the project
+declares no console script, because pip would build a launcher program (`diamond-mcp.exe` on Windows)
+from it, and the wheels installer installs no executable of its own.
 
 ## Running the tests
 
@@ -459,7 +461,12 @@ folder for that interpreter's version). It prints which folder it chose.
   registers it.
 - **Wheels zip:** finds the Python it was built for (searching `python3.11`, `python3`, `python`,
   and `py -3.11` on Windows, so an older default `python3` is fine), creates a virtual
-  environment in `--venv-dir` (default `~/diamond-mcp-venv`), installs, checks, and registers.
+  environment in `--venv-dir` (default `~/diamond-mcp-venv`), installs (with `--force-reinstall`, so a
+  rebuild with an unchanged version number still replaces the old files), checks, and registers
+  `<environment>/python -I -m diamond_mcp`. No launcher program is installed. `-I` (isolated mode) makes
+  Python ignore `PYTHONPATH` and the current folder: with a plain `-m`, a stray `mcp.py` in the folder the
+  AI client runs in is imported in place of the real package. An earlier install's registration of
+  `bin/diamond-mcp` (or `Scripts\diamond-mcp.exe`) is replaced, and removed again by `--uninstall`.
 
 Both mark the folder they create with `.diamond-mcp-installer` and never reuse, replace or
 delete a folder that lacks it (an existing empty folder is accepted). Registration is

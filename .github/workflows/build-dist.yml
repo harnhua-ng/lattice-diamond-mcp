@@ -10,8 +10,10 @@ name: Build dist
 #
 #   WHEELS      lattice-diamond-mcp-<version>-cp<NN>-<os>-x86_64.zip
 #               The package and every dependency as wheels, installed with pip into a virtual
-#               environment. Tied to ONE Python version (the `wheels_python` input) and needs
-#               glibc 2.28+ on Linux (Red Hat 8). Contains no PyInstaller code. Readable source.
+#               environment. No program of ours is installed (no diamond-mcp.exe): the server
+#               runs as `python -I -m diamond_mcp` from that environment. Tied to ONE Python
+#               version (the `wheels_python` input) and needs glibc 2.28+ on Linux (Red Hat 8).
+#               Contains no PyInstaller code. Readable source.
 #
 # Each zip is built on the operating system it is for: pip and uv resolve for the machine they run
 # on, so a Windows zip built on Linux would silently lack Windows-only dependencies.
@@ -509,9 +511,13 @@ jobs:
 
       - name: Talk MCP to the installed server
         run: |
-          exe="$VENV_DIR/bin/diamond-mcp"
-          if [ -f "$VENV_DIR/Scripts/diamond-mcp.exe" ]; then exe="$VENV_DIR/Scripts/diamond-mcp.exe"; fi
-          '${{ steps.py.outputs.python-path }}' scripts/build_binary.py --smoke-test "$exe"
+          # No program of ours is installed: the server is the environment's python running the module.
+          py="$VENV_DIR/bin/python"
+          if [ -f "$VENV_DIR/Scripts/python.exe" ]; then py="$VENV_DIR/Scripts/python.exe"; fi
+          if ls "$VENV_DIR"/bin/diamond-mcp "$VENV_DIR"/Scripts/diamond-mcp.exe >/dev/null 2>&1; then
+            echo "a diamond-mcp launcher was installed; the wheels install must not create one" >&2; exit 1
+          fi
+          '${{ steps.py.outputs.python-path }}' scripts/build_binary.py --smoke-test "$py" --smoke-test-args="-I -m diamond_mcp"
 
       - name: Uninstall
         run: |
@@ -632,9 +638,13 @@ jobs:
 
       - name: Talk MCP to the installed server
         run: |
-          exe="$VENV_DIR/bin/diamond-mcp"
-          if [ -f "$VENV_DIR/Scripts/diamond-mcp.exe" ]; then exe="$VENV_DIR/Scripts/diamond-mcp.exe"; fi
-          '${{ steps.py.outputs.python-path }}' scripts/build_binary.py --smoke-test "$exe"
+          # No program of ours is installed: the server is the environment's python running the module.
+          py="$VENV_DIR/bin/python"
+          if [ -f "$VENV_DIR/Scripts/python.exe" ]; then py="$VENV_DIR/Scripts/python.exe"; fi
+          if ls "$VENV_DIR"/bin/diamond-mcp "$VENV_DIR"/Scripts/diamond-mcp.exe >/dev/null 2>&1; then
+            echo "a diamond-mcp launcher was installed; the wheels install must not create one" >&2; exit 1
+          fi
+          '${{ steps.py.outputs.python-path }}' scripts/build_binary.py --smoke-test "$py" --smoke-test-args="-I -m diamond_mcp"
 
       - name: Uninstall
         run: |

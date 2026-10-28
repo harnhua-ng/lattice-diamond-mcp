@@ -274,6 +274,57 @@ def test_register_puts_the_name_before_the_env_option(fake_claude):
 
 
 @posix_only
+def test_register_passes_the_server_arguments_after_the_program(fake_claude):
+    claude, state = fake_claude
+    install.register(claude, "diamond", "user", "/venv/bin/python", None, False, server_args=install.WHEELS_SERVER_ARGS)
+    call = Path(str(state) + ".calls").read_text().splitlines()[-1].split()
+    assert call[call.index("--") + 1:] == ["/venv/bin/python", "-I", "-m", "diamond_mcp"]
+
+
+@posix_only
+def test_register_replaces_the_launcher_an_earlier_install_registered(fake_claude, capsys):
+    claude, state = fake_claude
+    state.write_text("diamond\t/venv/bin/diamond-mcp\nother\t/x\n")
+    install.register(claude, "diamond", "user", "/venv/bin/python", None, False,
+                     server_args=install.WHEELS_SERVER_ARGS, replaces=["/venv/bin/diamond-mcp"])
+    assert state.read_text() == "other\t/x\ndiamond\t/venv/bin/python\n"
+    assert "Replacing" in capsys.readouterr().out
+
+
+@posix_only
+def test_register_still_refuses_an_entry_that_is_not_ours_when_replacing_is_allowed(fake_claude):
+    claude, state = fake_claude
+    state.write_text("diamond\t/some/other/server\n")
+    with pytest.raises(install.InstallError, match="already registered"):
+        install.register(claude, "diamond", "user", "/venv/bin/python", None, False, replaces=["/venv/bin/diamond-mcp"])
+    assert state.read_text() == "diamond\t/some/other/server\n"
+
+
+@posix_only
+def test_unregister_also_removes_an_old_launcher_registration(fake_claude):
+    claude, state = fake_claude
+    state.write_text("diamond\t/venv/bin/diamond-mcp\n")
+    install.unregister(claude, "diamond", "user", "/venv/bin/python", False, replaces=["/venv/bin/diamond-mcp"])
+    assert state.read_text() == ""
+
+
+def test_the_wheels_install_registers_python_in_isolated_mode_not_a_launcher():
+    assert install.WHEELS_SERVER_ARGS == ["-I", "-m", "diamond_mcp"]
+    import tomllib
+    project = tomllib.loads((SCRIPTS.parent / "pyproject.toml").read_text())["project"]
+    assert "scripts" not in project and "gui-scripts" not in project, "pip would build a launcher program from these"
+
+
+@posix_only
+def test_a_dry_run_shows_the_python_command_to_register(tmp_path, monkeypatch, capsys, fake_claude):
+    claude, _ = fake_claude
+    monkeypatch.setattr(install, "load_buildinfo", lambda folder=None: info())
+    install.main(["--dry-run", "--venv-dir", str(tmp_path / "v"), "--claude-path", claude])
+    out = capsys.readouterr().out
+    assert "-I -m diamond_mcp" in out and "diamond-mcp --help" not in out
+
+
+@posix_only
 def test_register_is_idempotent(fake_claude, capsys):
     claude, state = fake_claude
     install.register(claude, "diamond", "user", "/venv/bin/diamond-mcp", None, False)
@@ -309,7 +360,7 @@ def test_uninstall_removes_registration_and_marked_environment(fake_claude, tmp_
     venv = tmp_path / "venv"
     (venv / "bin").mkdir(parents=True)
     (venv / install.MARKER).write_text("x")
-    state.write_text("diamond\t%s\n" % install.venv_server(str(venv)))
+    state.write_text("diamond\t%s\n" % install.venv_python(str(venv)))
     args = install.parse_args(["--uninstall", "--venv-dir", str(venv), "--claude-path", claude])
     install.do_uninstall(args)
     assert not venv.exists() and state.read_text() == ""
@@ -332,7 +383,7 @@ def test_uninstall_dry_run_changes_nothing(fake_claude, tmp_path):
     venv = tmp_path / "venv"
     venv.mkdir()
     (venv / install.MARKER).write_text("x")
-    state.write_text("diamond\t%s\n" % install.venv_server(str(venv)))
+    state.write_text("diamond\t%s\n" % install.venv_python(str(venv)))
     install.do_uninstall(install.parse_args(["--uninstall", "--dry-run", "--venv-dir", str(venv), "--claude-path", claude]))
     assert venv.exists() and "diamond" in state.read_text()
 
@@ -396,8 +447,9 @@ def test_build_and_install_the_real_bundle(tmp_path):
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                             env={k: v for k, v in os.environ.items() if k not in ("PIP_FIND_LINKS", "PIP_INDEX_URL")})
     assert result.returncode == 0, result.stdout
-    server = install.venv_server(str(venv))
-    assert "diamond-mcp" in subprocess.run([server, "--help"], stdout=subprocess.PIPE, text=True).stdout
+    server = install.venv_python(str(venv))
+    assert "diamond-mcp" in subprocess.run([server] + install.WHEELS_SERVER_ARGS + ["--help"], stdout=subprocess.PIPE, text=True).stdout
+    assert not os.path.exists(install.legacy_launcher(str(venv))), "the wheels install must not create a launcher"
     again = subprocess.run([sys.executable, str(bundle / "install.py"), "--uninstall", "--venv-dir", str(venv)],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert again.returncode == 0 and not venv.exists(), again.stdout

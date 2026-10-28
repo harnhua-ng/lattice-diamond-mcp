@@ -23,8 +23,9 @@ dist = ["build"]
 # uv.lock records PyInstaller and its dependencies with hashes; it is not a runtime dependency.
 build = ["pyinstaller==6.22.3"]
 
-[project.scripts]
-diamond-mcp = "diamond_mcp:main"
+# There is deliberately no [project.scripts] entry. pip would turn it into a launcher program
+# (diamond-mcp.exe on Windows), and the wheels installer is meant to install no executable of
+# our own. The server is started as `python -I -m diamond_mcp` (see scripts/install.py).
 
 [tool.setuptools.packages.find]
 where = ["src"]
