@@ -519,9 +519,9 @@ def test_uninstall_targets_follow_the_kind_of_installation(bundle, tmp_path):
     args = install.parse_args(["--uninstall"])
     assert install.uninstall_targets(args) == [("binary", install.default_install_dir())]
     (root / "BUILDINFO").write_text(json.dumps({"kind": "wheels"}))
-    assert install.uninstall_targets(args) == [("wheels", install.default_venv_dir())]
+    assert install.uninstall_targets(args) == [("wheels", install.default_venv_dir()), ("wheels", install.previous_venv_dir())]
     (root / "BUILDINFO").unlink()
-    assert [k for k, _ in install.uninstall_targets(args)] == ["binary", "wheels"]  # unknown kind: look at both
+    assert [k for k, _ in install.uninstall_targets(args)] == ["binary", "wheels", "wheels"]  # unknown kind: look at both
     explicit = install.parse_args(["--uninstall", "--install-dir", str(tmp_path / "a")])
     assert install.uninstall_targets(explicit) == [("binary", str(tmp_path / "a"))]
 
@@ -561,3 +561,14 @@ def test_build_the_real_standalone_installer(tmp_path):
     sbom = json.loads(next(tmp_path.glob("*.cdx.json")).read_text())
     assert build.validate_sbom(sbom) > 20
     assert any(c["type"] == "file" for c in sbom["components"]) and any(c["name"] == "cpython" for c in sbom["components"])
+
+
+def test_default_environment_is_in_the_per_user_data_folder(monkeypatch, tmp_path):
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    assert install.default_venv_dir() == str(tmp_path / "Local" / "lattice-diamond-mcp" / "venv")
+    monkeypatch.setattr(install, "IS_WINDOWS", False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    assert install.default_venv_dir() == str(tmp_path / "share" / "lattice-diamond-mcp" / "venv")
+    monkeypatch.delenv("XDG_DATA_HOME")
+    assert install.default_venv_dir().endswith(os.path.join(".local", "share", "lattice-diamond-mcp", "venv"))

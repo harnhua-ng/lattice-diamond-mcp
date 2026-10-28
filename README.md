@@ -461,7 +461,7 @@ folder for that interpreter's version). It prints which folder it chose.
   registers it.
 - **Wheels zip:** finds the Python it was built for (searching `python3.11`, `python3`, `python`,
   and `py -3.11` on Windows, so an older default `python3` is fine), creates a virtual
-  environment in `--venv-dir` (default `~/diamond-mcp-venv`), installs (with `--force-reinstall`, so a
+  environment in `--venv-dir` (default `%LOCALAPPDATA%\lattice-diamond-mcp\venv` on Windows, `~/.local/share/lattice-diamond-mcp/venv` on Linux; earlier versions used `~/diamond-mcp-venv`, which `--uninstall` still removes), installs (with `--force-reinstall`, so a
   rebuild with an unchanged version number still replaces the old files), checks, and registers
   `<environment>/python -I -m diamond_mcp`. No launcher program is installed. `-I` (isolated mode) makes
   Python ignore `PYTHONPATH` and the current folder: with a plain `-m`, a stray `mcp.py` in the folder the

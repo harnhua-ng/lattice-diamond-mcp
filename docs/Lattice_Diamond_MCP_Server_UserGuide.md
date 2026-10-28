@@ -273,7 +273,7 @@ the project's build workflow but has never been run, so no Windows zip has been 
 **Standalone zip.** The installer copies the `diamond-mcp` folder to `~/diamond-mcp`, checks that
 the program starts, and registers it with Claude Code under the name `diamond`. It touches no
 Python installation. **Python-packages zip.** It creates its own environment in
-`~/diamond-mcp-venv`, installs the packages from the zip without the network, checks that the
+`%LOCALAPPDATA%\lattice-diamond-mcp\venv` on Windows or `~/.local/share/lattice-diamond-mcp/venv` on Linux, installs the packages from the zip without the network, checks that the
 server starts, and registers it. In both cases you can run it again at any time: it replaces its
 own folder and does not register twice, and it never touches a folder it did not create.
 
@@ -283,7 +283,7 @@ own folder and does not register twice, and it never touches a folder it did not
 |---|---|
 | `--no-register` | Install only. Do not register with Claude Code. |
 | `--install-dir DIR` | Standalone zip: where to install (default `~/diamond-mcp`). |
-| `--venv-dir DIR` | Python-packages zip: where to create the environment (default `~/diamond-mcp-venv`). |
+| `--venv-dir DIR` | Python-packages zip: where to create the environment (default: the folder above). |
 | `--python PATH` | Python-packages zip: use this interpreter; it must be the version the zip was built for. |
 | `--diamond-exe PATH` | Store `DIAMOND_EXE` in the Claude Code registration. |
 | `--claude-path PATH` | Path to the `claude` program, if it is not on your `PATH`. The installer also looks in the VS Code Claude Code extension. |
@@ -420,8 +420,8 @@ Every field is optional. Do not commit a license value to a shared repository.
 `install.py` registers the server with Claude Code for you. This section is for registering by
 hand, or with another client. Use the command your installer reported. With the standalone zip it
 is the program `~/diamond-mcp/diamond-mcp`. With the Python-packages zip no program is installed:
-the server is the environment's Python running the module, `~/diamond-mcp-venv/bin/python -I -m diamond_mcp`
-(`%USERPROFILE%\diamond-mcp-venv\Scripts\python.exe -I -m diamond_mcp` on Windows). The `-I` makes
+the server is the environment's Python running the module, `~/.local/share/lattice-diamond-mcp/venv/bin/python -I -m diamond_mcp`
+(`%LOCALAPPDATA%\lattice-diamond-mcp\venv\Scripts\python.exe -I -m diamond_mcp` on Windows). The `-I` makes
 Python ignore `PYTHONPATH` and the current folder, so a project folder cannot supply a module of its
 own in place of the server's. The examples below use the second; substitute the first if you
 installed the standalone zip.
@@ -429,7 +429,7 @@ installed the standalone zip.
 ### Claude Code
 
 ```bash
-claude mcp add --scope user diamond -- ~/diamond-mcp-venv/bin/python -I -m diamond_mcp
+claude mcp add --scope user diamond -- ~/.local/share/lattice-diamond-mcp/venv/bin/python -I -m diamond_mcp
 ```
 
 To pass settings at registration time, add environment variables with `-e`:
@@ -438,7 +438,7 @@ To pass settings at registration time, add environment variables with `-e`:
 claude mcp add --scope user diamond \
     -e DIAMOND_EXE=/opt/lattice/diamond/3.14.0.75.0/bin/lin64/diamondc \
     -e LM_LICENSE_FILE=1234@license-server \
-    -- ~/diamond-mcp-venv/bin/python -I -m diamond_mcp
+    -- ~/.local/share/lattice-diamond-mcp/venv/bin/python -I -m diamond_mcp
 ```
 
 `--scope user` makes the server available in every project and stores the entry outside
@@ -468,7 +468,7 @@ Any MCP client that can launch a stdio server works. A typical entry is:
 {
     "mcpServers": {
         "diamond": {
-            "command": "/home/you/diamond-mcp-venv/bin/python",
+            "command": "/home/you/.local/share/lattice-diamond-mcp/venv/bin/python",
             "args": ["-I", "-m", "diamond_mcp"],
             "env": {
                 "DIAMOND_EXE": "/opt/lattice/diamond/3.14.0.75.0/bin/lin64/diamondc"
@@ -759,15 +759,15 @@ bwrap \
   --tmpfs /tmp \
   --tmpfs "$HOME" \
   --ro-bind "$HOME/.flexlmrc" "$HOME/.flexlmrc" \
-  --ro-bind "$HOME/diamond-mcp-venv" "$HOME/diamond-mcp-venv" \
+  --ro-bind "$HOME/.local/share/lattice-diamond-mcp/venv" "$HOME/.local/share/lattice-diamond-mcp/venv" \
   --bind "$PROJECT" "$PROJECT" \
   --bind "$STATE" "$STATE" \
   --setenv DIAMOND_MCP_AUDIT_LOG "$STATE/audit.log" \
   --unshare-pid --unshare-ipc --unshare-uts --die-with-parent --new-session \
-  "$HOME/diamond-mcp-venv/bin/python" -I -m diamond_mcp
+  "$HOME/.local/share/lattice-diamond-mcp/venv/bin/python" -I -m diamond_mcp
 ```
 
-With the **standalone** zip, replace the two `diamond-mcp-venv` lines with the program folder and
+With the **standalone** zip, replace the two `lattice-diamond-mcp/venv` lines with the program folder and
 its executable: `--ro-bind "$HOME/diamond-mcp" "$HOME/diamond-mcp"` and
 `"$HOME/diamond-mcp/diamond-mcp"`. This variant was tested: a full compile with a bitstream ran
 inside it, a write outside the project was refused, and the audit log was written. Because the
@@ -794,7 +794,7 @@ What each part does:
 To use it from Claude Code, register the whole command:
 
 ```bash
-claude mcp add --scope user diamond -- bwrap <options as above> "$HOME/diamond-mcp-venv/bin/python" -I -m diamond_mcp
+claude mcp add --scope user diamond -- bwrap <options as above> "$HOME/.local/share/lattice-diamond-mcp/venv/bin/python" -I -m diamond_mcp
 ```
 
 Anything written to the private `/tmp` or the hidden home disappears when the sandbox ends.

@@ -569,6 +569,16 @@ def unregister(claude, name, scope, server, dry_run, replaces=()):
 # ----------------------------------------------------------------------- main
 
 def default_venv_dir():
+    """The per-user data folder, as for the other Lattice MCP installers (no spaces-prone or roaming location)."""
+    if IS_WINDOWS:
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "lattice-diamond-mcp", "venv")
+
+
+def previous_venv_dir():
+    """Where earlier versions of this installer created the environment."""
     return os.path.join(os.path.expanduser("~"), "diamond-mcp-venv")
 
 
@@ -655,8 +665,10 @@ def uninstall_targets(args):
     try:
         kind = load_buildinfo().get("kind", "wheels")
     except InstallError:  # run from somewhere other than the unpacked zip: look at both default places
-        return [("binary", default_install_dir()), ("wheels", default_venv_dir())]
-    return [("binary", default_install_dir())] if kind == "binary" else [("wheels", default_venv_dir())]
+        return [("binary", default_install_dir()), ("wheels", default_venv_dir()), ("wheels", previous_venv_dir())]
+    if kind == "binary":
+        return [("binary", default_install_dir())]
+    return [("wheels", default_venv_dir()), ("wheels", previous_venv_dir())]
 
 
 def do_uninstall(args):
