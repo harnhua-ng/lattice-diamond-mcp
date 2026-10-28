@@ -3,9 +3,11 @@
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
+import time
 import zipfile
 from pathlib import Path
 
@@ -453,3 +455,257 @@ def test_build_and_install_the_real_bundle(tmp_path):
     again = subprocess.run([sys.executable, str(bundle / "install.py"), "--uninstall", "--venv-dir", str(venv)],
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     assert again.returncode == 0 and not venv.exists(), again.stdout
+
+
+# ------------------------------------------------- a server that is running from the folder
+
+def ns(**kw):
+    import argparse
+    return argparse.Namespace(**kw)
+
+
+@pytest.fixture
+def running_server(tmp_path, monkeypatch):
+    """A folder with a fake 'running' state: detection and listing are replaced, the choreography is real."""
+    folder = tmp_path / "venv"
+    folder.mkdir()
+    state = {"running": True}
+    monkeypatch.setattr(install, "server_running_from", lambda p: state["running"])
+    monkeypatch.setattr(install, "pids_running_from", lambda p: ["7 python.exe"])
+    return folder, state
+
+
+def test_the_lock_policy_comes_from_the_flag_then_the_environment(monkeypatch):
+    monkeypatch.delenv("DIAMOND_MCP_IF_LOCKED", raising=False)
+    assert install.if_locked_policy(ns(if_locked="")) == "ask"
+    assert install.if_locked_policy(ns(if_locked="kill")) == "kill"
+    monkeypatch.setenv("DIAMOND_MCP_IF_LOCKED", "exit")
+    assert install.if_locked_policy(ns(if_locked="")) == "exit"
+    assert install.if_locked_policy(ns(if_locked="kill")) == "kill"  # the flag wins
+    monkeypatch.setenv("DIAMOND_MCP_IF_LOCKED", "bogus")
+    assert install.if_locked_policy(ns(if_locked="")) == "ask"
+
+
+def test_pids_are_read_from_the_listing_without_the_installers_own():
+    own = os.getpid()
+    assert install.process_ids(["12 python.exe", "%d python.exe" % own, "x y", "", "34 python.exe"]) == [12, 34]
+
+
+def test_nothing_is_asked_when_nothing_runs_from_the_folder(running_server, monkeypatch):
+    folder, state = running_server
+    state["running"] = False
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("must not ask"))
+    install.free_directory(ns(if_locked=""), folder)
+
+
+def test_a_missing_folder_is_not_checked(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "server_running_from", lambda p: pytest.fail("must not look"))
+    install.free_directory(ns(if_locked=""), tmp_path / "absent")
+
+
+def test_kill_policy_stops_the_processes_without_asking(running_server, monkeypatch):
+    folder, state = running_server
+    killed = []
+    monkeypatch.setattr(install, "kill_processes", lambda procs: killed.append(procs) or state.update(running=False))
+    monkeypatch.setattr("builtins.input", lambda *a: pytest.fail("must not ask"))
+    install.free_directory(ns(if_locked="kill"), folder)
+    assert killed == [["7 python.exe"]]
+
+
+def test_exit_policy_changes_nothing(running_server, monkeypatch):
+    folder, _ = running_server
+    monkeypatch.setattr(install, "kill_processes", lambda procs: pytest.fail("must not kill"))
+    with pytest.raises(install.InstallError, match="Nothing has been changed"):
+        install.free_directory(ns(if_locked="exit"), folder)
+
+
+def test_nobody_to_ask_exits_and_names_the_flag_without_killing(running_server, monkeypatch):
+    folder, _ = running_server
+    monkeypatch.setattr(install, "kill_processes", lambda procs: pytest.fail("must not kill"))
+
+    def no_stdin(*a):
+        raise EOFError
+    monkeypatch.setattr("builtins.input", no_stdin)
+    with pytest.raises(install.InstallError) as stop:
+        install.free_directory(ns(if_locked=""), folder)
+    message = str(stop.value)
+    assert "--if-locked kill" in message and "DIAMOND_MCP_IF_LOCKED" in message and "7 python.exe" in message
+    assert "do not choose for them" in message
+
+
+@pytest.mark.parametrize("answer, kills", [("a", True), ("c", False), ("﻿a", True), (" C \n", False)])
+def test_the_prompt_answers_kill_or_exit(running_server, monkeypatch, answer, kills):
+    folder, state = running_server
+    killed = []
+    monkeypatch.setattr(install, "kill_processes", lambda procs: killed.append(1) or state.update(running=False))
+    monkeypatch.setattr("builtins.input", lambda *a: answer)
+    if kills:
+        install.free_directory(ns(if_locked=""), folder)
+    else:
+        with pytest.raises(install.InstallError):
+            install.free_directory(ns(if_locked=""), folder)
+    assert bool(killed) is kills
+
+
+def test_a_wrong_answer_is_asked_again(running_server, monkeypatch):
+    folder, state = running_server
+    answers = iter(["x", "", "a"])
+    monkeypatch.setattr("builtins.input", lambda *a: next(answers))
+    monkeypatch.setattr(install, "kill_processes", lambda procs: state.update(running=False))
+    install.free_directory(ns(if_locked=""), folder)
+    assert not list(answers)
+
+
+def test_waiting_rechecks_after_the_user_stops_the_processes(running_server, monkeypatch):
+    folder, state = running_server
+
+    def fake_input(prompt=""):
+        if "Choice" in prompt:
+            return "b"
+        state["running"] = False  # the user stopped the server, then pressed Enter
+        return ""
+    monkeypatch.setattr("builtins.input", fake_input)
+    monkeypatch.setattr(install, "kill_processes", lambda procs: pytest.fail("must not kill"))
+    install.free_directory(ns(if_locked=""), folder)
+
+
+def test_a_kill_that_does_not_free_it_falls_back_to_asking(running_server, monkeypatch):
+    folder, _ = running_server
+    monkeypatch.setattr(install, "kill_processes", lambda procs: None)
+    monkeypatch.setattr(install, "wait_until_free", lambda p, seconds=15.0: False)
+    monkeypatch.setattr("builtins.input", lambda *a: "c")
+    with pytest.raises(install.InstallError, match="still in use"):
+        install.free_directory(ns(if_locked="kill"), folder)
+
+
+def test_helper_processes_never_read_the_installers_stdin(tmp_path, monkeypatch):
+    """A child that inherits stdin swallows the answer typed at the prompt."""
+    seen = []
+
+    class Done:
+        returncode, stdout = 0, "5 python.exe"
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    monkeypatch.setattr(install.subprocess, "run", lambda cmd, **k: seen.append((cmd[0], k)) or Done())
+    install.pids_running_from(str(tmp_path))
+    install.kill_processes(["5 python.exe"])
+    assert [name for name, _ in seen] == ["powershell", "taskkill"]
+    assert all(k.get("stdin") is install.subprocess.DEVNULL for _, k in seen)
+
+
+def test_windows_kills_the_whole_process_tree(monkeypatch):
+    seen = []
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    monkeypatch.setattr(install.subprocess, "run", lambda cmd, **k: seen.append(cmd))
+    install.kill_processes(["5 python.exe"])
+    assert seen == [["taskkill", "/F", "/T", "/PID", "5"]]
+
+
+def test_a_running_server_is_detected_from_locked_files_on_windows_and_processes_elsewhere(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    monkeypatch.setattr(install, "locked_files", lambda p: ["python.exe"])
+    assert install.server_running_from(str(tmp_path))
+    monkeypatch.setattr(install, "locked_files", lambda p: [])
+    assert not install.server_running_from(str(tmp_path))
+    monkeypatch.setattr(install, "IS_WINDOWS", False)
+    monkeypatch.setattr(install, "pids_running_from", lambda p: ["9 python"])
+    assert install.server_running_from(str(tmp_path))
+
+
+@posix_only
+def test_a_real_process_started_from_the_folder_is_found_and_stopped(tmp_path):
+    folder = tmp_path / "bin-holder"
+    (folder / "bin").mkdir(parents=True)
+    program = folder / "bin" / "diamond-mcp"
+    program.symlink_to(shutil.which("sleep"))
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    bystander = subprocess.Popen([shutil.which("sleep"), "60"])
+    process = subprocess.Popen([str(program), "60"])  # argv[0] is the path inside the folder, as a client launches it
+    try:
+        deadline = time.monotonic() + 5
+        while not install.pids_running_from(str(folder)) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        found = install.pids_running_from(str(folder))
+        assert found == ["%d diamond-mcp" % process.pid]  # not the bystander, not this test
+        assert install.pids_running_from(str(other)) == []
+        install.free_directory(ns(if_locked="kill"), folder)
+        assert process.wait(timeout=10) is not None
+        assert install.pids_running_from(str(folder)) == []
+        assert bystander.poll() is None, "a process from outside the folder must be left alone"
+    finally:
+        for p in (process, bystander):
+            if p.poll() is None:
+                p.kill()
+            p.wait()
+
+
+@posix_only
+def test_the_installer_stops_before_changing_anything_when_a_server_runs_and_nobody_can_answer(tmp_path, monkeypatch, capsys):
+    """End to end through main(): the environment must be untouched and the exit status 1."""
+    venv = tmp_path / "venv"
+    venv.mkdir()
+    (venv / install.MARKER).write_text("x")
+    (venv / "precious.txt").write_text("keep")
+    monkeypatch.setattr(install, "load_buildinfo", lambda folder=None: info())
+    monkeypatch.setattr(install, "find_python", lambda wanted, explicit=None: [sys.executable])
+    monkeypatch.setattr(install, "pids_running_from", lambda p: ["7 python"])
+    monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(EOFError()))
+    monkeypatch.setattr(install, "run", lambda *a, **k: pytest.fail("must not run pip or anything else"))
+    assert install.main(["--no-register", "--venv-dir", str(venv)]) == 1
+    err = capsys.readouterr().err
+    assert "in use by running MCP server" in err and "--if-locked kill" in err
+    assert (venv / "precious.txt").read_text() == "keep"
+
+
+@posix_only
+def test_uninstall_frees_the_folder_before_removing_the_registration(fake_claude, tmp_path, monkeypatch):
+    claude, state = fake_claude
+    venv = tmp_path / "venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / install.MARKER).write_text("x")
+    state.write_text("diamond\t%s\n" % install.venv_python(str(venv)))
+    monkeypatch.setattr(install, "pids_running_from", lambda p: ["7 python"])
+    monkeypatch.setattr("builtins.input", lambda *a: "c")
+    with pytest.raises(install.InstallError, match="still in use"):
+        install.do_uninstall(install.parse_args(["--uninstall", "--venv-dir", str(venv), "--claude-path", claude]))
+    assert venv.exists() and "diamond" in state.read_text(), "exiting must leave the registration and the files alone"
+
+
+def test_a_folder_that_is_not_ours_is_never_checked_for_a_running_server(tmp_path, monkeypatch):
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    monkeypatch.setattr(install, "server_running_from", lambda p: pytest.fail("must not look"))
+    monkeypatch.setattr(install, "load_buildinfo", lambda folder=None: info())
+    monkeypatch.setattr(install, "find_python", lambda wanted, explicit=None: [sys.executable])
+    assert install.main(["--no-register", "--venv-dir", str(foreign)]) == 1
+
+
+def test_the_dry_run_does_not_look_for_running_servers(tmp_path, monkeypatch):
+    venv = tmp_path / "venv"
+    venv.mkdir()
+    (venv / install.MARKER).write_text("x")
+    monkeypatch.setattr(install, "server_running_from", lambda p: pytest.fail("must not look"))
+    monkeypatch.setattr(install, "load_buildinfo", lambda folder=None: info())
+    monkeypatch.setattr(install, "find_python", lambda wanted, explicit=None: [sys.executable])
+    assert install.main(["--dry-run", "--no-register", "--venv-dir", str(venv)]) == 0
+
+
+def test_a_read_only_file_is_not_mistaken_for_a_locked_one(tmp_path, monkeypatch):
+    if os.name == "nt":
+        pytest.skip("checks the Windows branch with a stand-in")
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    readonly = tmp_path / "ro.dll"
+    readonly.write_bytes(b"x")
+    readonly.chmod(0o444)
+    real_open = open
+
+    def refuse(path, mode="r", *a, **k):
+        if str(path).endswith(".dll") and "+" in mode:
+            raise PermissionError(13, "denied")
+        return real_open(path, mode, *a, **k)
+    monkeypatch.setattr("builtins.open", refuse)
+    if os.access(str(readonly), os.W_OK):
+        pytest.skip("running as a user who can write read-only files (root)")
+    assert install.locked_files(str(tmp_path)) == []
+    readonly.chmod(0o644)
+    assert install.locked_files(str(tmp_path)) == [str(readonly)]

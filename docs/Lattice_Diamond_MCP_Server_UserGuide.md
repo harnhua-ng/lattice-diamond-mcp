@@ -288,8 +288,26 @@ own folder and does not register twice, and it never touches a folder it did not
 | `--diamond-exe PATH` | Store `DIAMOND_EXE` in the Claude Code registration. |
 | `--claude-path PATH` | Path to the `claude` program, if it is not on your `PATH`. The installer also looks in the VS Code Claude Code extension. |
 | `--name NAME`, `--scope SCOPE` | Registration name (default `diamond`) and scope (`user`, `local` or `project`; default `user`). |
+| `--if-locked ask\|kill\|exit` | What to do when the server is running (see below). Default `ask`. Also `DIAMOND_MCP_IF_LOCKED`. |
 | `--dry-run` | Show what would be done without doing it. |
 | `--uninstall` | Remove the registration and the installation. |
+
+**If the server is running.** Every open Claude Code or VS Code session starts a copy of the server,
+and a running copy holds its files open: Windows cannot replace them, and on Linux the running program
+would lose files it still needs. Before changing anything, `install.py` (and `--uninstall`) looks for
+such processes. If it finds any it lists them and asks:
+
+```
+  [a] Stop those processes now and continue. Open sessions lose the Diamond MCP server until they are restarted.
+  [b] I will stop them myself: wait here, then check again.
+  [c] Exit without changing anything.
+```
+
+It never stops a process without your answer. Closing Claude Code and VS Code and running the installer
+again also works. When nobody can answer (the installer is run by a script, a pipe or an AI assistant)
+it exits with nothing changed and says so; run it again with `--if-locked kill` to approve stopping the
+processes in advance, or `--if-locked exit` to refuse. Restart your AI client afterwards to start the new
+server.
 
 If the `claude` program is not found, the installer still finishes and prints the command to
 register the server later, which also works for other MCP clients that can run a stdio

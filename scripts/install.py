@@ -9,6 +9,7 @@ Run it from the unpacked installer zip:
     python install.py                      install, then register with Claude Code
     python install.py --no-register        install only
     python install.py --uninstall          remove the registration and the installation
+    python install.py --if-locked kill     stop a running server without asking (see below)
 
 Two kinds of zip use this one script; BUILDINFO says which:
 
@@ -25,6 +26,14 @@ Either kind also comes as a COMBINED zip with a build for each operating system 
 Python version) in its own folder next to this script; the installer picks the folder that fits this
 machine and says which it chose.
 
+A server that is running from the folder being replaced (every open Claude Code or VS Code session
+starts one) holds its files open: Windows cannot replace them, and on Linux the running program would
+lose the files it still needs. So before anything is changed the installer looks for such processes and,
+if there are any, asks what to do: stop them, wait while you stop them, or exit with nothing changed.
+It never stops a process without your say-so. With nobody to answer (a script, or an AI assistant
+running the installer) it exits and says so; --if-locked kill (or DIAMOND_MCP_IF_LOCKED=kill) is the
+way to approve stopping them in advance, --if-locked exit to refuse.
+
 This file uses only the standard library and runs on Python 3.8 or later.
 """
 
@@ -34,8 +43,10 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 IS_WINDOWS = os.name == "nt"
@@ -214,6 +225,186 @@ def run(command, dry_run=False, check=True, quiet=False):
     return result
 
 
+# ------------------------------------------------------------ a running server
+
+# What to do when a server runs from the folder (--if-locked, or DIAMOND_MCP_IF_LOCKED).
+IF_LOCKED_CHOICES = ("ask", "kill", "exit")
+
+
+def locked_files(path):
+    """Executables and extension modules under `path` that a running process holds open.
+    Windows refuses to replace these; elsewhere nothing is locked."""
+    if not IS_WINDOWS:
+        return []
+    locked = []
+    for pattern in ("*.exe", "*.pyd", "*.dll"):
+        for found in glob.glob(os.path.join(glob.escape(path), "**", pattern), recursive=True):
+            try:
+                with open(found, "r+b"):
+                    pass
+            except PermissionError:
+                if os.access(found, os.W_OK):  # not merely read-only: something has it open
+                    locked.append(found)
+            except OSError:
+                pass
+    return locked
+
+
+def pids_running_from(path):
+    """Best effort: 'PID name' for each process whose program lives under `path`."""
+    if not IS_WINDOWS:
+        found = []
+        prefix = os.path.abspath(path) + os.sep
+        try:
+            entries = os.listdir("/proc")
+        except OSError:
+            return found
+        for entry in entries:
+            if not entry.isdigit():
+                continue
+            try:
+                with open("/proc/%s/cmdline" % entry, "rb") as handle:
+                    argv0 = handle.read().split(b"\0", 1)[0].decode("utf-8", "replace")
+            except OSError:
+                continue
+            if argv0.startswith(prefix):
+                found.append("%s %s" % (entry, os.path.basename(argv0)))
+        return found
+    script = ("Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like '"
+              + os.path.abspath(path).replace("'", "''") + "\\*' } | ForEach-Object { \"$($_.ProcessId) $($_.Name)\" }")
+    try:
+        result = subprocess.run(["powershell", "-NoProfile", "-Command", script], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, universal_newlines=True, timeout=30,
+                                stdin=subprocess.DEVNULL)  # it would otherwise swallow a typed answer
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def server_running_from(path):
+    """Whether a process is running from `path`. On Windows the held-open files say so; elsewhere
+    nothing is locked, but replacing the files under a running program breaks its next import, so
+    the processes are looked for instead."""
+    if IS_WINDOWS:
+        return bool(locked_files(path))
+    return bool(pids_running_from(path))
+
+
+def if_locked_policy(args):
+    value = (getattr(args, "if_locked", "") or os.environ.get("DIAMOND_MCP_IF_LOCKED", "")).strip().lower()
+    return value if value in IF_LOCKED_CHOICES else "ask"
+
+
+def process_ids(procs):
+    """The PIDs in `pids_running_from` output ('1234 python.exe'), without this installer's own."""
+    pids = []
+    for line in procs:
+        head = line.split(None, 1)[0] if line.strip() else ""
+        if head.isdigit() and int(head) != os.getpid():
+            pids.append(int(head))
+    return pids
+
+
+def kill_processes(procs):
+    """Stop the listed processes. On Windows the whole tree goes: the environment's python.exe is a
+    launcher, and the process that holds the compiled modules open is its child, which is not itself
+    found under the folder."""
+    for pid in process_ids(procs):
+        if IS_WINDOWS:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+        for _ in range(20):
+            time.sleep(0.25)
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+
+
+def wait_until_free(path, seconds=15.0):
+    """Whether nothing runs from `path` within `seconds`."""
+    deadline = time.monotonic() + seconds
+    while True:
+        if not server_running_from(path):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.5)
+
+
+def describe_lock(path, procs):
+    listing = "\n".join("    " + p for p in procs) if procs else "    (the processes could not be listed)"
+    return ("%s is in use by running MCP server process(es):\n%s\n"
+            "It cannot be replaced while they run. Every open Claude Code or VS Code session starts one." % (path, listing))
+
+
+def ask_lock_choice(path, procs):
+    """'kill', 'wait' or 'exit' from the user, or 'noprompt' when nobody can answer (a script, or an AI
+    assistant running the installer). EOFError, not isatty(), decides that."""
+    say()
+    say(describe_lock(path, procs))
+    say()
+    say("  [a] Stop those processes now and continue. Open sessions lose the Diamond MCP server\n"
+        "      until they are restarted.")
+    say("  [b] I will stop them myself: wait here, then check again.")
+    say("  [c] Exit without changing anything.")
+    while True:
+        try:
+            answer = input("Choice [a/b/c]: ").lstrip("\ufeff").strip().lower()  # PowerShell 5.1 pipes a BOM
+        except (EOFError, KeyboardInterrupt):
+            say()
+            return "noprompt"
+        if answer in ("a", "b", "c"):
+            return {"a": "kill", "b": "wait", "c": "exit"}[answer]
+        say("  Please answer a, b or c.")
+
+
+def locked_exit_message(path, procs, asked):
+    if asked:
+        return "Nothing has been changed. %s is still in use." % path
+    return (describe_lock(path, procs) + "\n"
+            "There is nobody to ask, so nothing has been changed. Choose one and run the installer again:\n"
+            "  - stop the listed processes yourself (or close Claude Code and VS Code), then re-run;\n"
+            "  - re-run with --if-locked kill (or DIAMOND_MCP_IF_LOCKED=kill) to let the installer stop them.\n"
+            "If an AI assistant is running this installer, ask the user which, and do not choose for them.")
+
+
+def free_directory(args, path):
+    """Return once nothing runs from `path`, or raise InstallError. Stopping the server processes needs
+    the user's say-so: --if-locked kill, or answer [a] at the prompt."""
+    if not os.path.isdir(path):
+        return
+    policy = if_locked_policy(args)
+    while server_running_from(path):
+        procs = pids_running_from(path)
+        choice = policy if policy in ("kill", "exit") else ask_lock_choice(path, procs)
+        if choice in ("exit", "noprompt"):
+            raise InstallError(locked_exit_message(path, procs, choice == "exit"))
+        if choice == "kill":
+            say("  Stopping %d process(es) running from %s ..." % (len(process_ids(procs)), path))
+            kill_processes(procs)
+            if wait_until_free(path):
+                say("  OK  Nothing runs from it now.")
+                return
+            say("  Something still holds files in it.")
+            policy = "ask"  # do not loop on a kill that did not work
+        elif choice == "wait":
+            try:
+                input("Stop the processes, then press Enter to check again ... ")
+            except (EOFError, KeyboardInterrupt):
+                raise InstallError(locked_exit_message(path, procs, False))
+
+
 def prepare_venv(venv_dir, python_cmd, dry_run):
     marker = os.path.join(venv_dir, MARKER)
     if os.path.isdir(venv_dir) and not os.path.exists(marker):
@@ -284,6 +475,8 @@ def install_binary_bundle(args, info, folder=None):
     if os.path.isdir(install_dir) and not os.path.exists(marker) and os.listdir(install_dir):
         raise InstallError("%s already exists and was not created by this installer. Choose another "
                            "folder with --install-dir, or remove it yourself." % install_dir)
+    if not args.dry_run and os.path.exists(marker):
+        free_directory(args, install_dir)
     say("Copying the program to %s" % install_dir)
     if args.dry_run:
         say("  [dry run] copy %s -> %s" % (source, install_dir))
@@ -395,6 +588,10 @@ def parse_args(argv):
     parser.add_argument("--scope", choices=("user", "local", "project"), default="user",
                         help="Claude Code configuration scope (default: %(default)s).")
     parser.add_argument("--diamond-exe", help="Diamond console executable to store in the registration (DIAMOND_EXE).")
+    parser.add_argument("--if-locked", choices=IF_LOCKED_CHOICES, default="",
+                        help="When a running MCP server holds the folder: ask (default; prompts, and exits if nobody can "
+                             "answer), kill (stop those processes and continue) or exit (change nothing). "
+                             "Also DIAMOND_MCP_IF_LOCKED.")
     parser.add_argument("--uninstall", action="store_true", help="Remove the registration and the installation.")
     parser.add_argument("--dry-run", action="store_true", help="Show what would be done without doing it.")
     return parser.parse_args(argv)
@@ -405,6 +602,8 @@ def install_wheel_bundle(args, info, folder=None):
     python_cmd = find_python(wanted, args.python)
     say("Installing lattice-diamond-mcp %s with Python %s (%s)." % (info["version"], wanted, " ".join(python_cmd)))
     venv_dir = os.path.abspath(args.venv_dir or default_venv_dir())
+    if not args.dry_run and os.path.exists(os.path.join(venv_dir, MARKER)):
+        free_directory(args, venv_dir)  # before pip touches it; a folder that is not ours is refused below
     prepare_venv(venv_dir, python_cmd, args.dry_run)
     install_packages(venv_dir, info, args.dry_run, folder)
     verify(venv_dir, info, args.dry_run)
@@ -470,6 +669,8 @@ def do_uninstall(args):
         if not explicit and not os.path.isdir(directory):
             continue
         server = binary_server(directory) if kind == "binary" else venv_python(directory)
+        if not args.dry_run and os.path.exists(os.path.join(directory, MARKER)):
+            free_directory(args, directory)  # first: leaving the registration removed but the files in place helps nobody
         if claude is not None:
             unregister(claude, args.name, args.scope, server, args.dry_run,
                        replaces=[] if kind == "binary" else [legacy_launcher(directory)])

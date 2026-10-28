@@ -468,6 +468,19 @@ folder for that interpreter's version). It prints which folder it chose.
   AI client runs in is imported in place of the real package. An earlier install's registration of
   `bin/diamond-mcp` (or `Scripts\diamond-mcp.exe`) is replaced, and removed again by `--uninstall`.
 
+**A running server.** Both first look for processes running from the folder they are about to replace (every
+open Claude Code or VS Code session starts one). On Windows the test is whether the folder's `.exe`, `.pyd`
+and `.dll` files are held open (a read-only file is not mistaken for a locked one); on Linux it is a scan of
+`/proc/*/cmdline` for a program under the folder. If anything runs, the installer lists it and asks: stop
+them, wait while you stop them, or exit with nothing changed. Nothing is stopped without that answer. With
+no one to answer (stdin closed, a script, an AI assistant) it exits with status 1; `--if-locked kill`
+(or `DIAMOND_MCP_IF_LOCKED=kill`) approves stopping in advance and `--if-locked exit` refuses. Stopping uses
+SIGTERM, then SIGKILL after five seconds, on Linux and `taskkill /F /T` (the whole process tree, because the
+environment's `python.exe` is a launcher and its child holds the modules) on Windows. The check runs before
+pip or the copy touches anything, and `--uninstall` makes it before removing the registration, so exiting
+leaves both in place. A folder the installer did not create is never checked or touched. The mechanism is
+the one in `scripts/install.py` of cortex-bridge (`--if-locked`).
+
 Both mark the folder they create with `.diamond-mcp-installer` and never reuse, replace or
 delete a folder that lacks it (an existing empty folder is accepted). Registration is
 `claude mcp add --scope user diamond -- <program>`; it will not overwrite a registration of the
