@@ -483,8 +483,10 @@ the one in `scripts/install.py` of cortex-bridge (`--if-locked`).
 
 Both mark the folder they create with `.diamond-mcp-installer` and never reuse, replace or
 delete a folder that lacks it (an existing empty folder is accepted). Registration is
-`claude mcp add --scope user diamond -- <program>`; it will not overwrite a registration of the
-same name that points elsewhere. `--uninstall` reverses it with the same protections, and finds
+`claude mcp add --scope user lattice-diamond-mcp -- <program>`; it will not overwrite a registration of the
+same name that points elsewhere. Earlier versions registered the name `diamond`; the installer removes
+such a registration if it points at this program (tool names change from `mcp__diamond__*` to
+`mcp__lattice-diamond-mcp__*`). `--uninstall` reverses it with the same protections, and finds
 the right kind of installation from `BUILDINFO`. Note the argument order: `claude mcp add` treats
 `-e` as taking several values, so the server name must come before it.
 

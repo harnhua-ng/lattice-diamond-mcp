@@ -287,7 +287,7 @@ own folder and does not register twice, and it never touches a folder it did not
 | `--python PATH` | Python-packages zip: use this interpreter; it must be the version the zip was built for. |
 | `--diamond-exe PATH` | Store `DIAMOND_EXE` in the Claude Code registration. |
 | `--claude-path PATH` | Path to the `claude` program, if it is not on your `PATH`. The installer also looks in the VS Code Claude Code extension. |
-| `--name NAME`, `--scope SCOPE` | Registration name (default `diamond`) and scope (`user`, `local` or `project`; default `user`). |
+| `--name NAME`, `--scope SCOPE` | Registration name (default `lattice-diamond-mcp`; an earlier registration named `diamond` that points at this program is replaced, and tool names change from `mcp__diamond__*` to `mcp__lattice-diamond-mcp__*`) and scope (`user`, `local` or `project`; default `user`). |
 | `--if-locked ask\|kill\|exit` | What to do when the server is running (see below). Default `ask`. Also `DIAMOND_MCP_IF_LOCKED`. |
 | `--dry-run` | Show what would be done without doing it. |
 | `--uninstall` | Remove the registration and the installation. |
@@ -333,7 +333,7 @@ your audit log, your config file or your projects.
 | `... already exists and was not created by this installer` | Choose another `--install-dir` or `--venv-dir`; the installer never changes a folder it did not create. |
 | `The diamond-mcp folder is missing next to install.py` | Run `install.py` from the unpacked zip, not from somewhere else. |
 | `Could not install into ... If the server is running, close your AI client` | Your AI client has the old program running; close it and run the installer again. |
-| `A server named 'diamond' is already registered ... does not point to this installation` | Another server uses that name. Remove it with `claude mcp remove diamond`, or use `--name`. |
+| `A server named 'lattice-diamond-mcp' is already registered ... does not point to this installation` | Another server uses that name. Remove it with `claude mcp remove lattice-diamond-mcp`, or use `--name`. |
 | The installed program fails with `GLIBC_x.y not found` | This machine's glibc is older than the build needs. Report the message; it is checked when the zip is built, so it should not happen. |
 
 ### What is in the zip
@@ -429,13 +429,13 @@ installed the standalone zip.
 ### Claude Code
 
 ```bash
-claude mcp add --scope user diamond -- ~/.local/share/lattice-diamond-mcp/venv/bin/python -I -m diamond_mcp
+claude mcp add --scope user lattice-diamond-mcp -- ~/.local/share/lattice-diamond-mcp/venv/bin/python -I -m diamond_mcp
 ```
 
 To pass settings at registration time, add environment variables with `-e`:
 
 ```bash
-claude mcp add --scope user diamond \
+claude mcp add --scope user lattice-diamond-mcp \
     -e DIAMOND_EXE=/opt/lattice/diamond/3.14.0.75.0/bin/lin64/diamondc \
     -e LM_LICENSE_FILE=1234@license-server \
     -- ~/.local/share/lattice-diamond-mcp/venv/bin/python -I -m diamond_mcp
@@ -451,7 +451,7 @@ To avoid a permission prompt on every call, allow the server's tools in
 ```json
 {
     "permissions": {
-        "allow": ["mcp__diamond__*"]
+        "allow": ["mcp__lattice-diamond-mcp__*"]
     }
 }
 ```
@@ -467,7 +467,7 @@ Any MCP client that can launch a stdio server works. A typical entry is:
 ```json
 {
     "mcpServers": {
-        "diamond": {
+        "lattice-diamond-mcp": {
             "command": "/home/you/.local/share/lattice-diamond-mcp/venv/bin/python",
             "args": ["-I", "-m", "diamond_mcp"],
             "env": {
@@ -794,7 +794,7 @@ What each part does:
 To use it from Claude Code, register the whole command:
 
 ```bash
-claude mcp add --scope user diamond -- bwrap <options as above> "$HOME/.local/share/lattice-diamond-mcp/venv/bin/python" -I -m diamond_mcp
+claude mcp add --scope user lattice-diamond-mcp -- bwrap <options as above> "$HOME/.local/share/lattice-diamond-mcp/venv/bin/python" -I -m diamond_mcp
 ```
 
 Anything written to the private `/tmp` or the hidden home disappears when the sandbox ends.

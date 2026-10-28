@@ -709,3 +709,28 @@ def test_a_read_only_file_is_not_mistaken_for_a_locked_one(tmp_path, monkeypatch
     assert install.locked_files(str(tmp_path)) == []
     readonly.chmod(0o644)
     assert install.locked_files(str(tmp_path)) == [str(readonly)]
+
+
+def test_the_default_registration_name_is_lattice_diamond_mcp():
+    assert install.DEFAULT_NAME == "lattice-diamond-mcp"
+    assert install.parse_args([]).name == "lattice-diamond-mcp"
+
+
+@posix_only
+def test_an_old_diamond_registration_of_this_program_is_retired(fake_claude):
+    claude, state = fake_claude
+    state.write_text("diamond\t/venv/bin/python -I -m diamond_mcp\n")
+    install.retire_old_name(claude, "lattice-diamond-mcp", "user", "/venv/bin/python", False)
+    assert state.read_text() == ""
+
+
+@posix_only
+def test_an_old_registration_that_points_elsewhere_or_was_chosen_is_kept(fake_claude):
+    claude, state = fake_claude
+    state.write_text("diamond\t/some/other/server\n")
+    install.retire_old_name(claude, "lattice-diamond-mcp", "user", "/venv/bin/python", False)
+    assert state.read_text() == "diamond\t/some/other/server\n"
+    state.write_text("diamond\t/venv/bin/python\n")
+    install.retire_old_name(claude, "diamond", "user", "/venv/bin/python", False)  # the user asked for that name
+    install.retire_old_name(claude, "lattice-diamond-mcp", "user", "/venv/bin/python", True)  # dry run
+    assert state.read_text() == "diamond\t/venv/bin/python\n"

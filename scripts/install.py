@@ -51,7 +51,8 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 IS_WINDOWS = os.name == "nt"
 MARKER = ".diamond-mcp-installer"
-DEFAULT_NAME = "diamond"
+DEFAULT_NAME = "lattice-diamond-mcp"
+OLD_DEFAULT_NAME = "diamond"  # the name earlier versions registered
 # How the wheels install starts the server, after the environment's python.
 WHEELS_SERVER_ARGS = ["-I", "-m", "diamond_mcp"]
 
@@ -554,6 +555,21 @@ def register(claude, name, scope, server, diamond_exe, dry_run, server_args=(), 
     return True
 
 
+def retire_old_name(claude, name, scope, server, dry_run, replaces=()):
+    """Remove a registration under the old default name, but only if it points at this program, so that
+    one installation is not registered twice. Not done when the user chose the old name themselves."""
+    if name == OLD_DEFAULT_NAME or dry_run:
+        return
+    existing = registered_command(claude, OLD_DEFAULT_NAME)
+    if existing is None:
+        return
+    ours = [server, binary_server(default_install_dir()), venv_python(previous_venv_dir()),
+            legacy_launcher(previous_venv_dir())] + list(replaces)
+    if any(path in existing for path in ours):
+        run([claude, "mcp", "remove", OLD_DEFAULT_NAME, "--scope", scope], check=False)
+        say("Removed the earlier registration '%s'; the server is now registered as '%s'." % (OLD_DEFAULT_NAME, name))
+
+
 def unregister(claude, name, scope, server, dry_run, replaces=()):
     existing = None if dry_run else registered_command(claude, name)
     if existing is None and not dry_run:
@@ -642,6 +658,8 @@ def do_install(args, info, folder=None):
             say("The claude command was not found, so the server was not registered.")
         else:
             registered = register(claude, args.name, args.scope, server, args.diamond_exe, args.dry_run, server_args, replaces)
+            if registered:
+                retire_old_name(claude, args.name, args.scope, server, args.dry_run, replaces)
 
     say()
     say("Done. The server command is:")
@@ -686,6 +704,8 @@ def do_uninstall(args):
         if claude is not None:
             unregister(claude, args.name, args.scope, server, args.dry_run,
                        replaces=[] if kind == "binary" else [legacy_launcher(directory)])
+            retire_old_name(claude, args.name, args.scope, server, args.dry_run,
+                            replaces=[] if kind == "binary" else [legacy_launcher(directory)])
         marker = os.path.join(directory, MARKER)
         if not os.path.isdir(directory):
             say("Nothing installed at %s." % directory)
