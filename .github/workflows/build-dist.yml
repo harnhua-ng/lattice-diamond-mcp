@@ -459,6 +459,7 @@ jobs:
           mkdir unpacked
           unzip -q out/lattice-diamond-mcp-*.zip -d unpacked
           bundle=$(echo "$PWD"/unpacked/*/)
+          bundle=${bundle%/}   # without the trailing slash, find prints paths that the -path pattern below can never match
           test -f "$bundle/install.py" && test -f "$bundle/python/python.exe"
           # the only program in the package is python.exe
           others=$(find "$bundle" -iname '*.exe' ! -path "$bundle/python/python.exe" | head -n 1)
