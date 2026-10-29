@@ -494,6 +494,12 @@ jobs:
           if ($sig.Status -ne 'Valid') { throw "python.exe signature status: $($sig.Status)" }
           if ($sig.SignerCertificate.Subject -notmatch 'Python Software Foundation') { throw "unexpected signer" }
 
+      # mcp imports pywin32 unconditionally on Windows, and pywin32 is found through its .pth file, which the embedded
+      # Python reads only because the ._pth file enables `import site`. Say so plainly if that breaks.
+      - name: The Windows-only dependencies load
+        run: |
+          "$INSTALL_DIR/python.exe" -I -c "import sys, pywintypes, win32api, win32job, win32con; import mcp.os.win32.utilities, diamond_mcp.server; print('pywin32 and the server import under', sys.version.split()[0])"
+
       - name: Talk MCP to the installed server
         run: |
           '${{ steps.checker.outputs.python-path }}' scripts/build_binary.py --smoke-test "$INSTALL_DIR/python.exe" --smoke-test-args="-I -m diamond_mcp"

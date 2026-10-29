@@ -501,6 +501,16 @@ project owner, and the build warns if python.org's clause ever changes); four th
 is signed by someone else, fetch the new key, confirm its fingerprint against python.org's published list of
 release-signing keys (the script cannot do that for you), replace the key file and the constant together.
 
+**Windows-only dependencies (pywin32).** `mcp` imports `pywin32` unconditionally on Windows, so the package must carry it
+or the server fails at import. pip decides a dependency's environment markers (`pywin32; sys_platform == 'win32'`) from the
+machine it runs on, whatever `--platform` says, so a build on Linux silently dropped it. The build therefore runs pip with the
+Windows marker values (as cortex-bridge's `create_export.py` does) and then checks that every package the wheels need on
+Windows is present. pywin32 needs three more things, all handled by the build: its `.pth` file is read only when
+`import site` is enabled, so the `._pth` file now ends with `import site` (it still ignores `PYTHONPATH` and the current
+folder, and `install.py` starts Python with `-I`); the scripts in a wheel's `.data/scripts` are not installed; and the two
+programs it ships, `Pythonwin.exe` and `pythonservice.exe`, are deleted (recorded in `BUILDINFO` as `removed_programs` and in
+`LEGAL_REVIEW.txt`). The package now has about 59 unsigned native files, almost all pywin32's; `NATIVE_FILES.txt` lists them.
+
 **Which Python.** python.org builds an embeddable zip only for releases that have binaries, and stopped for 3.11 and
 3.12 at 3.11.9 and 3.12.10 (all later patch releases are source only). Shipping those would mean shipping an
 interpreter without the later security fixes, so the build uses 3.13.17. When python.org publishes a newer 3.13 or

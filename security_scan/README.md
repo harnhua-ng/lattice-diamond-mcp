@@ -121,7 +121,8 @@ Numbering is local to this scan. The last column names the corresponding cortex-
   with no executable of ours: python.org's embeddable CPython 3.13.17 (SHA-256 pinned in the script; python.exe
   carries the Python Software Foundation's signature, found in the signature block but **not validated** on Linux) plus the
   locked wheels (each checked against `uv.lock`). Built and layout-checked on Linux, **never run on Windows**. Open:
-  four third-party `.pyd` files are unsigned; python.org's Windows binaries carry Microsoft Distributable Code (`vcruntime140*.dll`) under conditions in the LICENSE.txt of
+  about 59 third-party native files are unsigned (pywin32 brings most; the list is in NATIVE_FILES.txt in the package), and
+  pywin32's two programs are removed from the package; python.org's Windows binaries carry Microsoft Distributable Code (`vcruntime140*.dll`) under conditions in the LICENSE.txt of
   its zip that require end users to be bound by protecting terms; the package ships a notice for that (wording needs Legal's approval); the zip is verified against python.org's OpenPGP signature (key 7ED10B65...34E5, checked in and
   pinned by fingerprint) as well as a pinned SHA-256, but the fingerprint's provenance (python.org's published key list
   could not be reached when it was chosen) needs one confirmation by a person; the library notices are python.org's own

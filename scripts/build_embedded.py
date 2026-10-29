@@ -229,38 +229,144 @@ def build_own_wheel(wheels):
     return next(wheels.glob("lattice_diamond_mcp-*.whl"))
 
 
+def windows_marker_environment():
+    """The dependency-marker values of the Windows machine this package is for. pip judges a dependency's markers
+    (`pywin32; sys_platform == 'win32'`) by the machine it RUNS on, whatever --platform says, so on a Linux build machine
+    it silently drops every Windows-only dependency (pywin32, colorama), which this package needs to start."""
+    version = ".".join(EMBED_VERSION.split(".")[:2])
+    return {"sys_platform": "win32", "platform_system": "Windows", "os_name": "nt", "platform_machine": "AMD64",
+            "platform_python_implementation": "CPython", "implementation_name": "cpython",
+            "python_version": version, "python_full_version": EMBED_VERSION, "implementation_version": EMBED_VERSION,
+            "platform_release": "10", "platform_version": ""}
+
+
+#: pip, started with its marker environment replaced by the target's (the same device cortex-bridge's create_export.py uses).
+PIP_AS_TARGET = r"""
+import json, runpy, sys
+env = json.loads(sys.argv[1])
+try:
+    from pip._vendor.packaging import markers
+    _host = markers.default_environment
+    markers.default_environment = lambda: {**_host(), **env}
+except Exception as exc:
+    sys.stderr.write("error: could not retarget pip's markers: %s\n" % exc)
+    sys.exit(3)
+sys.argv = ["pip"] + sys.argv[2:]
+runpy.run_module("pip", run_name="__main__")
+"""
+
+
+def requirement_parser():
+    try:
+        from packaging.requirements import Requirement
+    except ImportError:
+        try:
+            from pip._vendor.packaging.requirements import Requirement
+        except ImportError:
+            raise BuildError("Neither packaging nor pip's copy of it is importable, so the dependencies cannot be checked.")
+    return Requirement
+
+
+def wheel_requirements(wheel):
+    """The Requires-Dist lines of a wheel's METADATA."""
+    with zipfile.ZipFile(wheel) as archive:
+        for name in archive.namelist():
+            if name.endswith(".dist-info/METADATA") and name.count("/") == 1:
+                return [line.split(":", 1)[1].strip() for line in archive.read(name).decode("utf-8", "replace").splitlines()
+                        if line.startswith("Requires-Dist:")]
+    return []
+
+
+def check_closure(wheels, environment):
+    """BuildError if a package some wheel needs on the target (its markers judged with `environment`, extras left out) is not
+    among the wheels. This is what would have caught a missing pywin32, which makes the server fail at import on Windows."""
+    Requirement = requirement_parser()
+    present = {re.sub(r"[-_.]+", "-", w.name.split("-")[0]).lower() for w in wheels.glob("*.whl")}
+    missing = {}
+    for wheel in sorted(wheels.glob("*.whl")):
+        for line in wheel_requirements(wheel):
+            requirement = Requirement(line)
+            if requirement.marker is not None and not requirement.marker.evaluate({**environment, "extra": ""}):
+                continue
+            name = re.sub(r"[-_.]+", "-", requirement.name).lower()
+            if name not in present:
+                missing.setdefault(name, set()).add(wheel.name.split("-")[0])
+    if missing:
+        raise BuildError("Needed on Windows but not downloaded: " + "; ".join(
+            "%s (required by %s)" % (name, ", ".join(sorted(users))) for name, users in sorted(missing.items())))
+
+
 def download_wheels(wheels, own):
     locked = load_lock(REPO / "uv.lock")
     log("Downloading the Windows wheels for Python %s at the versions in uv.lock ..." % ".".join(EMBED_VERSION.split(".")[:2]))
+    environment = windows_marker_environment()
     with tempfile.TemporaryDirectory() as tmp:
         constraints = Path(tmp) / "locked.txt"
         constraints.write_text(lock_constraints_text(locked), encoding="utf-8")
-        run([sys.executable, "-m", "pip", "download", "--only-binary=:all:", "--platform", "win_amd64",
-             "--python-version", ".".join(EMBED_VERSION.split(".")[:2]), "--implementation", "cp",
+        run([sys.executable, "-c", PIP_AS_TARGET, json.dumps(environment), "download", "--only-binary=:all:",
+             "--platform", "win_amd64", "--python-version", ".".join(EMBED_VERSION.split(".")[:2]), "--implementation", "cp",
              "--abi", PYTHON_TAG, "--abi", "abi3", "--abi", "none", "--dest", str(wheels),
              "--disable-pip-version-check", "-c", str(constraints), str(own)])
     check_wheels_against_lock(wheels, locked, own.name.split("-")[0] + "-")
     log("  every dependency wheel matches the SHA-256 in uv.lock")
+    check_closure(wheels, environment)
+    log("  every package the wheels need on Windows is present")
 
 
 def unpack_wheels(wheels, site_packages):
-    """Unpack every wheel into site-packages. The wheels here are all plain library wheels (no scripts)."""
+    """Unpack every wheel into site-packages and return the scripts that were left out.
+
+    A wheel's `<name>-<version>.data/` folder is laid out by install scheme: purelib and platlib go into site-packages
+    (what pip does); scripts are NOT installed (they would be programs, and none is needed: pywin32's two are a post-install
+    helper and a test runner); anything else (headers, data, include) is refused so nothing is dropped unnoticed."""
     site_packages.mkdir(parents=True)
+    skipped = []
     for wheel in sorted(wheels.glob("*.whl")):
         with zipfile.ZipFile(wheel) as archive:
-            for name in archive.namelist():
+            for member in archive.infolist():
+                name = member.filename
                 parts = PurePosixPath(name).parts
                 if name.startswith("/") or ".." in parts:
                     raise BuildError("%s holds an unsafe path: %s" % (wheel.name, name))
+                if member.is_dir():
+                    continue
                 if parts and parts[0].endswith(".data"):
-                    raise BuildError("%s has a .data folder (scripts or headers), which this builder does not unpack." % wheel.name)
-            archive.extractall(site_packages)
+                    scheme = parts[1] if len(parts) > 2 else ""
+                    if scheme == "scripts":
+                        skipped.append("%s: %s" % (wheel.name.split("-")[0], "/".join(parts[2:])))
+                        continue
+                    if scheme not in ("purelib", "platlib"):
+                        raise BuildError("%s has %s, a kind of .data folder this builder does not unpack." % (wheel.name, "/".join(parts[:2])))
+                    target = site_packages.joinpath(*parts[2:])
+                else:
+                    target = site_packages.joinpath(*parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(member))
+    return skipped
+
+
+def remove_programs(site_packages):
+    """Delete every program (.exe) that a package's wheel put into site-packages, and return their paths (relative to it).
+
+    The point of this package is that no unsigned program is in it. pywin32 ships two, Pythonwin.exe (an IDE) and
+    pythonservice.exe (the host for Windows services); this server uses neither. The removal is recorded in BUILDINFO and
+    LEGAL_REVIEW.txt because the files then differ from the wheel (whose SHA-256 was checked against uv.lock before)."""
+    removed = []
+    for path in sorted(site_packages.rglob("*")):
+        if path.is_file() and path.suffix.lower() == ".exe":
+            removed.append(path.relative_to(site_packages).as_posix())
+            path.unlink()
+    return removed
 
 
 def write_pth(interpreter):
-    """Replace the ._pth file: the standard-library zip, the interpreter folder and site-packages, nothing else."""
+    """Replace the ._pth file: the standard-library zip, the interpreter folder, site-packages, and `import site`.
+
+    The embeddable Python ignores .pth files unless `import site` is enabled, and pywin32 (which mcp needs on Windows) puts
+    its folders on the path and finds its DLLs through pywin32.pth. Everything else about the embeddable's isolation stays:
+    with a ._pth file present it still ignores PYTHONPATH and the current folder, and install.py starts it with -I."""
     pth = next(interpreter.glob("python*._pth"))
-    pth.write_text("python%s.zip\n.\nLib\\site-packages\n" % PYTHON_TAG[2:], encoding="utf-8")
+    pth.write_text("python%s.zip\n.\nLib\\site-packages\nimport site\n" % PYTHON_TAG[2:], encoding="utf-8")
     return pth
 
 
@@ -303,7 +409,8 @@ def inventory_text(rows):
     lines += ["", "Totals: " + ", ".join("%d %s" % (n, name) for name, n in sorted(counts.items()))]
     return "\n".join(lines) + "\n"
 
-def legal_review_text(*, version, python_sha256, embedded_notices, unsigned_modules, vcruntime, python_org_notices=()):
+def legal_review_text(*, version, python_sha256, embedded_notices, unsigned_modules, vcruntime, python_org_notices=(),
+                      removed_programs=()):
     lines = [
         "Items for Legal review - %s %s (%s, python.org embeddable Python)" % (PACKAGE, version, PLATFORM),
         "",
@@ -358,11 +465,15 @@ def legal_review_text(*, version, python_sha256, embedded_notices, unsigned_modu
         "   Questions for Legal: does that notice, reached through section 4, satisfy the requirement to bind end users? Is the",
         "   reverse-engineering sentence consistent with Microsoft's actual redistribution terms?",
         "",
-        "4. Unsigned native modules from third-party wheels",
+        "4. Unsigned native files from third-party wheels",
         "",
         "   " + (", ".join(unsigned_modules) if unsigned_modules else "none") + ". They are not executables of ours and carry no",
         "   signature (NATIVE_FILES.txt lists them with their SHA-256). A site that enforces signed binaries (AppLocker, WDAC)",
         "   may object to them.",
+        "",
+        "   Programs that wheels contain and this package removes (none is needed by the server): " + (", ".join(removed_programs) or "none") + ".",
+        "   They would be unsigned executables. The files in the package therefore differ from those wheels in exactly these",
+        "   deletions; each wheel was checked against uv.lock before the files were unpacked.",
         "",
         "5. The product licence text in this zip was copied, not written for this product",
         "",
@@ -446,8 +557,8 @@ def verify_layout(stage, site_names):
     programs = sorted(p.name for p in stage.rglob("*.exe"))
     if programs != sorted(ONLY_PROGRAMS):
         raise BuildError("The package must hold no program but python.exe; found: %s" % ", ".join(programs))
-    pth = (python / ("python%s._pth" % PYTHON_TAG[2:])).read_text(encoding="utf-8").split()
-    if "Lib\\site-packages" not in pth or "site" in pth:
+    pth = (python / ("python%s._pth" % PYTHON_TAG[2:])).read_text(encoding="utf-8").splitlines()
+    if "Lib\\site-packages" not in pth or "import site" not in pth or any(line.startswith("#") for line in pth):
         raise BuildError("python%s._pth does not look as expected: %r" % (PYTHON_TAG[2:], pth))
     site = python / "Lib" / "site-packages"
     for name in site_names:
@@ -481,7 +592,12 @@ def build(stage, embed_zip, pgp_fingerprint=None):
         wheels.mkdir()
         own = build_own_wheel(wheels)
         download_wheels(wheels, own)
-        unpack_wheels(wheels, interpreter / "Lib" / "site-packages")
+        skipped_scripts = unpack_wheels(wheels, interpreter / "Lib" / "site-packages")
+        if skipped_scripts:
+            log("  not installed (scripts in .data folders): " + ", ".join(skipped_scripts))
+        removed_programs = remove_programs(interpreter / "Lib" / "site-packages")
+        if removed_programs:
+            log("  removed (programs from wheels; none is needed): " + ", ".join(removed_programs))
         (stage / "requirements.txt").write_text(requirements_text(wheels), encoding="utf-8")
         index, missing = extract_licences(wheels, stage / "THIRD_PARTY_LICENSES", own.name.split("-")[0] + "-")
         wheel_count = len(list(wheels.glob("*.whl")))
@@ -518,12 +634,13 @@ def build(stage, embed_zip, pgp_fingerprint=None):
     (stage / "THIRD_PARTY_LICENSES.txt").write_text("See LEGAL_REVIEW.txt for items that need a decision from Legal.\n\n" + index,
                                                     encoding="utf-8")
 
-    unsigned = sorted(p.name for p in (interpreter / "Lib" / "site-packages").rglob("*.pyd") if not signature_block(p))
+    unsigned = sorted(p.name for p in (interpreter / "Lib" / "site-packages").rglob("*")
+                      if p.suffix.lower() in (".pyd", ".dll") and not signature_block(p))
     vcruntime = sorted(p.name for p in interpreter.glob("vcruntime*.dll"))
     licence_present = (REPO / "LICENSE").is_file()
     (stage / "LEGAL_REVIEW.txt").write_text(legal_review_text(
         version=version, python_sha256=EMBED_SHA256, embedded_notices=notices, unsigned_modules=unsigned, vcruntime=vcruntime,
-        python_org_notices=python_org),
+        python_org_notices=python_org, removed_programs=removed_programs),
         encoding="utf-8")
     if licence_present:
         shutil.copyfile(REPO / "LICENSE", stage / "LICENSE")
@@ -535,7 +652,7 @@ def build(stage, embed_zip, pgp_fingerprint=None):
         "python_pgp_fingerprint": pgp_fingerprint, "python_pgp_verified": bool(pgp_fingerprint),
         "wheel_count": wheel_count, "uv_lock_sha256": sha256_file(REPO / "uv.lock"),
         "license_sha256": sha256_file(REPO / "LICENSE") if licence_present else None,
-        "unsigned_native_modules": unsigned,
+        "unsigned_native_modules": unsigned, "removed_programs": removed_programs,
     }
     (stage / "BUILDINFO").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     shutil.copy(REPO / "scripts" / "install.py", stage / "install.py")

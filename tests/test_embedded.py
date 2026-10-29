@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import struct
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -244,8 +245,9 @@ def test_wheels_are_unpacked_into_site_packages(tmp_path):
     assert (site / "pkg" / "__init__.py").read_text() == "x = 1" and (site / "pkg-1.dist-info" / "METADATA").exists()
 
 
-@pytest.mark.parametrize("member, message", [("pkg-1.data/scripts/tool", "\\.data folder"), ("../escape.py", "unsafe path")])
-def test_a_wheel_with_scripts_or_an_unsafe_path_is_refused(tmp_path, member, message):
+@pytest.mark.parametrize("member, message", [("pkg-1.data/headers/x.h", "does not unpack"), ("pkg-1.data/data/share/x", "does not unpack"),
+                                             ("../escape.py", "unsafe path")])
+def test_a_wheel_with_headers_data_or_an_unsafe_path_is_refused(tmp_path, member, message):
     wheels = tmp_path / "w"
     wheels.mkdir()
     make_wheel(wheels, "pkg-1-py3-none-any.whl", {member: "x"})
@@ -253,13 +255,65 @@ def test_a_wheel_with_scripts_or_an_unsafe_path_is_refused(tmp_path, member, mes
         embedded.unpack_wheels(wheels, tmp_path / "site")
 
 
-def test_the_pth_file_lists_the_library_zip_the_folder_and_site_packages_only(tmp_path):
-    (tmp_path / "python313._pth").write_text("python313.zip\n.\nimport site\n")
+def test_scripts_are_left_out_and_reported_and_purelib_goes_into_site_packages(tmp_path):
+    wheels = tmp_path / "w"
+    wheels.mkdir()
+    make_wheel(wheels, "pkg-1-py3-none-any.whl", {"pkg/__init__.py": "x", "pkg-1.data/scripts/post_install.py": "run",
+                                                  "pkg-1.data/purelib/extra/mod.py": "y", "pkg-1.dist-info/METADATA": "m"})
+    site = tmp_path / "python" / "Lib" / "site-packages"
+    skipped = embedded.unpack_wheels(wheels, site)
+    assert skipped == ["pkg: post_install.py"]
+    assert (site / "pkg" / "__init__.py").exists() and (site / "extra" / "mod.py").read_text() == "y"
+    assert not list(site.rglob("post_install.py")) and not any(p.name.endswith(".data") for p in site.iterdir())
+
+
+def test_programs_from_wheels_are_removed_and_reported(tmp_path):
+    site = tmp_path / "site-packages"
+    (site / "pythonwin").mkdir(parents=True)
+    (site / "win32").mkdir()
+    (site / "pythonwin" / "Pythonwin.exe").write_bytes(b"MZ")
+    (site / "win32" / "pythonservice.exe").write_bytes(b"MZ")
+    (site / "win32" / "win32api.pyd").write_bytes(b"MZ")
+    assert embedded.remove_programs(site) == ["pythonwin/Pythonwin.exe", "win32/pythonservice.exe"]
+    assert not list(site.rglob("*.exe")) and (site / "win32" / "win32api.pyd").exists()
+    assert embedded.remove_programs(site) == []
+
+
+def test_the_pth_file_lists_the_library_zip_the_folder_site_packages_and_enables_site(tmp_path):
+    (tmp_path / "python313._pth").write_text("python313.zip\n.\n# Uncomment to run site.main() automatically\n#import site\n")
     pth = embedded.write_pth(tmp_path)
-    assert pth.read_text().split() == ["python313.zip", ".", "Lib\\site-packages"]
+    assert pth.read_text().splitlines() == ["python313.zip", ".", "Lib\\site-packages", "import site"]
 
 
 # --------------------------------------------------------------------- the checks
+
+def make_wheel_with_requires(folder, name, requires):
+    metadata = "Metadata-Version: 2.1\nName: %s\n%s" % (name.split("-")[0], "".join("Requires-Dist: %s\n" % r for r in requires))
+    return make_wheel(folder, name + ".whl", {"%s.dist-info/METADATA" % "-".join(name.split("-")[:2]): metadata})
+
+
+def test_windows_markers_are_those_of_the_target_not_of_the_build_machine():
+    environment = embedded.windows_marker_environment()
+    assert environment["sys_platform"] == "win32" and environment["platform_system"] == "Windows" and environment["os_name"] == "nt"
+    assert environment["python_version"] == "3.13" and environment["python_full_version"] == embedded.EMBED_VERSION
+
+
+def test_a_missing_windows_only_dependency_is_caught(tmp_path):
+    wheels = tmp_path / "w"
+    wheels.mkdir()
+    make_wheel_with_requires(wheels, "mcp-1.0-py3-none-any", ["anyio>=4", "pywin32>=310; sys_platform == 'win32'",
+                                                              "uvloop; sys_platform != 'win32'", "extra-only; extra == 'cli'"])
+    make_wheel_with_requires(wheels, "anyio-4.0-py3-none-any", [])
+    with pytest.raises(embedded.BuildError, match=r"pywin32 \(required by mcp\)") as caught:
+        embedded.check_closure(wheels, embedded.windows_marker_environment())
+    assert "uvloop" not in str(caught.value) and "extra-only" not in str(caught.value)   # not needed on Windows, or only for an extra
+    make_wheel_with_requires(wheels, "pywin32-312-cp313-cp313-win_amd64", [])
+    embedded.check_closure(wheels, embedded.windows_marker_environment())               # now complete
+
+
+def test_pip_is_started_with_the_markers_of_the_target():
+    assert "markers.default_environment" in embedded.PIP_AS_TARGET and "sys.exit(3)" in embedded.PIP_AS_TARGET
+
 
 def make_stage(tmp_path):
     stage = tmp_path / "stage"
@@ -269,6 +323,17 @@ def make_stage(tmp_path):
     (site / "lattice_diamond_mcp-0.1.0.dist-info").mkdir()
     embedded.write_pth(stage / "python")
     return stage
+
+
+def test_a_layout_that_does_not_enable_site_or_keeps_a_comment_fails(tmp_path):
+    stage = make_stage(tmp_path)
+    pth = stage / "python" / "python313._pth"
+    pth.write_text("python313.zip\n.\nLib\\site-packages\n")
+    with pytest.raises(embedded.BuildError, match="does not look as expected"):
+        embedded.verify_layout(stage, ["mcp"])
+    pth.write_text("python313.zip\n.\nLib\\site-packages\nimport site\n#import site\n")
+    with pytest.raises(embedded.BuildError, match="does not look as expected"):
+        embedded.verify_layout(stage, ["mcp"])
 
 
 def test_a_correct_layout_passes(tmp_path):
@@ -294,7 +359,9 @@ def test_notices_are_copied_from_the_windows_set_and_listed_for_legal(tmp_path):
     assert "OpenSSL" in (tmp_path / "po" / "license.rst").read_text(encoding="utf-8")
     assert "openssl-3.5.9" in (tmp_path / "po" / "LIBRARIES.txt").read_text()
     text = embedded.legal_review_text(version="0.1.0", python_sha256="abc", embedded_notices=names,
-                                      unsigned_modules=["rpds.pyd"], vcruntime=["vcruntime140.dll"], python_org_notices=python_org)
+                                      unsigned_modules=["rpds.pyd"], vcruntime=["vcruntime140.dll"], python_org_notices=python_org,
+                                      removed_programs=["win32/pythonservice.exe"])
+    assert "win32/pythonservice.exe" in text and "differ from those wheels in exactly these" in text
     for needle in ("LICENSE.openssl-3.txt", "vcruntime140.dll", "rpds.pyd", "unmodified", "did\n      not publish them",
                    "No executable of ours", "license.rst", "microsoft-distributable-code.txt", "has NOT been checked"):
         assert needle in text, needle
