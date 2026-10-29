@@ -63,7 +63,8 @@ except ImportError:  # Python 3.10 and older
     sys.exit("build_binary.py needs Python 3.11 or later (it reads pyproject.toml with tomllib).")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_installer import LICENSE_NAME_RE, BuildError, git_commit, log, normalise, platform_name, run  # noqa: E402
+from build_installer import (LICENSE_NAME_RE, BuildError, git_commit, log, normalise, platform_name, run,  # noqa: E402
+                             write_manifest)
 
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE = "lattice-diamond-mcp"
@@ -734,6 +735,7 @@ def main(argv=None):
                 "license_sha256": sha256_file(REPO / "LICENSE") if licence_present else None,
             }
             (stage / "BUILDINFO").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+            write_manifest(stage)
 
             target, digest = write_zip(stage, outdir, name, "%s-%s" % (PACKAGE, version))
             if not args.skip_verify:

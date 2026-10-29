@@ -161,6 +161,20 @@ def check_wheels_against_lock(wheels_dir, locked, own_prefix):
                          "\nRun `uv lock` if a dependency changed on purpose; otherwise treat this as a possible tampering.")
 
 
+MANIFEST_NAME = "MANIFEST.sha256"
+
+
+def write_manifest(stage):
+    """MANIFEST.sha256: `<sha256>  <relative/path>` for every other file in the bundle, the format cortex-bridge's
+    installer reads. install.py checks it before it installs anything. Written last, after every other file."""
+    lines = []
+    for path in sorted(Path(stage).rglob("*")):
+        if path.is_file() and path.name != MANIFEST_NAME:
+            lines.append("%s  %s" % (sha256_file(path), path.relative_to(stage).as_posix()))
+    (Path(stage) / MANIFEST_NAME).write_bytes(("\n".join(lines) + "\n").encode("utf-8"))   # bytes: LF on every system
+    return len(lines)
+
+
 def requirements_text(wheels_dir):
     """requirements.txt: each wheel in the folder by exact version and SHA-256, for pip --require-hashes."""
     entries = sorted(
@@ -333,6 +347,7 @@ def main(argv=None):
             stage = Path(tmp) / "bundle"
             stage.mkdir()
             info, missing = build_bundle(stage, python_tag)
+            write_manifest(stage)
             if not args.skip_verify:
                 verify_bundle(stage)
             target, digest = write_zip(stage, Path(args.outdir), info)

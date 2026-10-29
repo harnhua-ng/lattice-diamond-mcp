@@ -48,7 +48,8 @@ from pathlib import Path, PurePosixPath
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_installer import (BuildError, check_wheels_against_lock, extract_licences, git_commit, load_lock,  # noqa: E402
-                             lock_constraints_text, log, project_version, requirements_text, run, sha256_file)
+                             lock_constraints_text, log, project_version, requirements_text, run, sha256_file,
+                             write_manifest)
 
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE = "lattice-diamond-mcp"
@@ -514,6 +515,7 @@ def build(stage, embed_zip, pgp_fingerprint=None):
     shutil.copy(REPO / "scripts" / "install.py", stage / "install.py")
     guide = REPO / "docs" / "Lattice_Diamond_MCP_Server_UserGuide.md"
     shutil.copy(guide, stage / guide.name)
+    write_manifest(stage)
     return info, missing, site_names
 
 

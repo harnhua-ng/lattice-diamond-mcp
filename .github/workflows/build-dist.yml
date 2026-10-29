@@ -41,6 +41,9 @@ name: Build dist
 # installed on fresh Linux and Windows runners before the workflow succeeds. The per-OS artifacts stay
 # available as intermediates.
 #
+# The hybrid package is built through scripts/create_export.py, the same entry point (and the same options, names
+# and sidecar files) as cortex-bridge's; run it locally with `python scripts/create_export.py --both` on Linux.
+#
 # Everything that matters is in scripts/build_binary.py and scripts/build_installer.py, so a build
 # can be reproduced on a laptop with the same commands the workflow runs. Both scripts test-install
 # their own zip before writing it; the verify jobs then install each zip on a FRESH runner.
@@ -408,8 +411,10 @@ jobs:
       # signature does not verify against the pinned key, python.exe
       # does not carry the Python Software Foundation's signature, a package differs from uv.lock, the
       # folder holds a program other than python.exe, or the package does not install and start.
+      # scripts/create_export.py is the entry point (the same command a person runs locally); it runs
+      # build_embedded.py, installs the finished zip with its own install.py and starts the installed server.
       - name: Build the embedded package
-        run: python scripts/build_embedded.py --outdir out
+        run: python scripts/create_export.py --windows --outdir out
 
       - name: Upload the embedded package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -418,6 +423,8 @@ jobs:
           path: |
             out/lattice-diamond-mcp-*.zip
             out/lattice-diamond-mcp-*.zip.sha256
+            out/lattice-diamond-mcp-*.zip.sbom.cdx.json
+            out/lattice-diamond-mcp-*.zip.buildinfo
           if-no-files-found: error
 
   # Installs the package on a fresh Windows runner with an old installer Python (3.8, the oldest
@@ -538,9 +545,13 @@ jobs:
           ls -la parts
           cd parts && sha256sum -c ./*.zip.sha256
 
+      # create_export.py combines the two per-OS zips (it refuses unless they come from one commit and one version),
+      # installs the result on this Linux runner, and writes the SBOM and the internal .buildinfo beside the zip.
       - name: Combine
         run: |
-          python scripts/combine_installers.py --kind standalone --outdir out parts/lattice-diamond-mcp-*.zip
+          python scripts/create_export.py --both --outdir out \
+            --windows-zip parts/lattice-diamond-mcp-*-embedded-windows-x86_64.zip \
+            --linux-zip parts/lattice-diamond-mcp-*-linux-x86_64.zip
           ls -la out
 
       - name: Upload the hybrid package
@@ -550,6 +561,8 @@ jobs:
           path: |
             out/lattice-diamond-mcp-*.zip
             out/lattice-diamond-mcp-*.zip.sha256
+            out/lattice-diamond-mcp-*.zip.sbom.cdx.json
+            out/lattice-diamond-mcp-*.zip.buildinfo
           if-no-files-found: error
 
   # Installs the hybrid package on a fresh runner of each operating system: the installer must choose the

@@ -19,7 +19,8 @@ build_installer.py (wheels). The result:
         windows-x86_64-cp311/   one folder per operating system AND Python version (wheels)
         linux-x86_64-cp311/
 
-Nothing inside a build is changed, so its BUILDINFO, licence texts and (standalone) SBOM still describe
+Nothing inside a build is changed (except that its MANIFEST.sha256 loses the line for install.py, which is
+the single one at the top), so its BUILDINFO, licence texts and (standalone) SBOM still describe
 exactly the files next to them. The inputs must all be the same kind, version and git commit, each
 operating system (and Python version) must appear once, and every install.py must be identical;
 otherwise nothing is written. File permissions are kept, so the Linux program stays executable.
@@ -31,6 +32,7 @@ import argparse
 import hashlib
 import json
 import posixpath
+import re
 import sys
 import zipfile
 from pathlib import Path
@@ -116,13 +118,13 @@ def check_compatible(bundles):
         log("WARNING: the builds were made from a tree with uncommitted changes (%s)." % first["git"])
 
 
-def output_name(bundles):
+def output_name(bundles, label=""):
     infos = [info for _, _, info, _ in bundles]
     kind = "standalone" if infos[0].get("kind") in STANDALONE_KINDS else "wheels"
     if any(i.get("kind") == "embedded" for i in infos):
         kind = "hybrid"   # Windows: python.org's Python with the packages, no program of ours; Linux: the standalone program
     operating_systems = [name for name in OS_ORDER if any(i["platform"].startswith(name) for i in infos)]
-    parts = [PACKAGE, infos[0]["version"], kind, "-".join(operating_systems)]
+    parts = [PACKAGE, infos[0]["version"] + label, kind, "-".join(operating_systems)]
     if kind == "wheels":
         parts.append("-".join(sorted({i["python_tag"] for i in infos})))
     else:
@@ -150,11 +152,11 @@ def index_text(bundles, name):
     return "\n".join(lines) + "\n"
 
 
-def write_combined(bundles, outdir):
+def write_combined(bundles, outdir, label=""):
     outdir.mkdir(parents=True, exist_ok=True)
-    name = output_name(bundles)
+    name = output_name(bundles, label)
     target = outdir / (name + ".zip")
-    root = "%s-%s" % (PACKAGE, bundles[0][2]["version"])
+    root = "%s-%s%s" % (PACKAGE, bundles[0][2]["version"], label)
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as out:
         installer_info = zipfile.ZipInfo(root + "/install.py", date_time=(1980, 1, 1, 0, 0, 0))
         installer_info.external_attr = (0o755 << 16)
@@ -176,6 +178,12 @@ def write_combined(bundles, outdir):
                     copy.compress_type = member.compress_type
                     if member.is_dir():
                         out.writestr(copy, b"")
+                    elif relative == "MANIFEST.sha256":
+                        # The one change to a build: its install.py is the single one at the top of this zip, so the
+                        # manifest of the folder must not list a file the folder no longer holds.
+                        text = source.read(member).decode("utf-8")
+                        kept = [line for line in text.splitlines() if not line.endswith("  install.py")]
+                        out.writestr(copy, ("\n".join(kept) + "\n").encode("utf-8"))
                     else:
                         with source.open(member) as handle, out.open(copy, "w") as sink:
                             for block in iter(lambda: handle.read(1 << 20), b""):
@@ -195,6 +203,9 @@ def main(argv=None):
     parser.add_argument("zips", nargs="+", help="the per-platform zips to combine")
     parser.add_argument("--kind", required=True, choices=("standalone", "wheels"), help="what the inputs are")
     parser.add_argument("--outdir", default="dist", help="where to write the combined zip (default: dist)")
+    parser.add_argument("--label", default="", type=lambda text: text if re.fullmatch(r"[A-Za-z0-9_.]*", text) else
+                        parser.error("--label may contain only letters, digits, _ and ."),
+                        help="append -TEXT to the name of the zip and of the folder in it, after the version")
     args = parser.parse_args(argv)
     try:
         bundles = []
@@ -205,7 +216,7 @@ def main(argv=None):
                 raise CombineError("%s is a %s zip, not a %s zip." % (Path(path).name, "standalone" if standalone else "wheels", args.kind))
             bundles.append((path, root, info, installer))
         check_compatible(bundles)
-        target, digest = write_combined(bundles, Path(args.outdir))
+        target, digest = write_combined(bundles, Path(args.outdir), "-" + args.label if args.label else "")
     except CombineError as exc:
         print("\nCOMBINE FAILED: %s" % exc, file=sys.stderr)
         return 1

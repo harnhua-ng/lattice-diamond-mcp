@@ -39,6 +39,7 @@ This file uses only the standard library and runs on Python 3.8 or later.
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import shlex
@@ -55,6 +56,7 @@ DEFAULT_NAME = "lattice-diamond-mcp"
 OLD_DEFAULT_NAME = "diamond"  # the name earlier versions registered
 # How the wheels install starts the server, after the environment's python.
 WHEELS_SERVER_ARGS = ["-I", "-m", "diamond_mcp"]
+MANIFEST_NAME = "MANIFEST.sha256"
 SELF_CONTAINED = ("binary", "embedded")  # builds that carry their own program or interpreter; no Python is needed
 
 
@@ -76,6 +78,41 @@ def load_buildinfo(folder=None):
     except (OSError, ValueError) as exc:
         raise InstallError("Cannot read BUILDINFO next to install.py (%s). Run the installer "
                            "from the unpacked zip." % exc)
+
+
+def verify_manifest(folder):
+    """Check every file of the build against its MANIFEST.sha256 (`<sha256>  <relative/path>` per line), before anything
+    is installed. Returns the number of files checked, or None when the build has no manifest (older zips)."""
+    path = os.path.join(folder, MANIFEST_NAME)
+    if not os.path.isfile(path):
+        return None
+    problems, count = [], 0
+    with open(path, encoding="utf-8") as handle:
+        entries = [line.rstrip("\r\n") for line in handle if line.strip()]
+    for entry in entries:
+        digest, _, relative = entry.partition("  ")
+        parts = relative.replace("\\", "/").split("/")
+        if len(digest) != 64 or not relative or relative.startswith("/") or ".." in parts:
+            problems.append("an unreadable line in %s: %r" % (MANIFEST_NAME, entry[:80]))
+            continue
+        target = os.path.join(folder, *parts)
+        count += 1
+        try:
+            actual = hashlib.sha256()
+            with open(target, "rb") as handle:
+                for block in iter(lambda: handle.read(1 << 20), b""):
+                    actual.update(block)
+        except OSError:
+            problems.append("missing or unreadable: " + relative)
+            continue
+        if actual.hexdigest() != digest:
+            problems.append("changed: " + relative)
+    if problems:
+        shown = "\n  ".join(problems[:8]) + ("\n  ... and %d more" % (len(problems) - 8) if len(problems) > 8 else "")
+        raise InstallError("The package is damaged or has been changed; nothing was installed. %d of %d files do not match "
+                           "%s:\n  %s\nDownload the zip again and compare its SHA-256 with the .sha256 file beside it. "
+                           "Antivirus software that quarantines a file also causes this." % (len(problems), len(entries), MANIFEST_NAME, shown))
+    return count
 
 
 def platform_matches(info):
@@ -675,6 +712,9 @@ def install_wheel_bundle(args, info, folder=None):
 
 def do_install(args, info, folder=None):
     check_platform(info)
+    checked = verify_manifest(folder or HERE)
+    say("Integrity: all %d files match %s." % (checked, MANIFEST_NAME) if checked is not None
+        else "Integrity: this package has no %s, so its files were not checked." % MANIFEST_NAME)
     if folder and os.path.abspath(folder) != os.path.abspath(HERE):
         say("This zip has several builds; using the one for %s%s (%s)." % (
             info.get("platform", "this machine"), ", Python " + info["python"] if info.get("kind") not in SELF_CONTAINED and info.get("python") else "",

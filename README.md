@@ -513,6 +513,40 @@ when `installers` is `both` or `embedded`: jobs `build-embedded`, `verify-embedd
 `verify-combined-hybrid`. Not tested on Windows: nothing here has run there, including the signature check and the
 installed server; the first workflow run is the first test.
 
+### `create_export.py`: one command for the customer package
+
+`scripts/create_export.py` is the single entry point, with the same options, file names and sidecar files as
+cortex-bridge's script of that name. It runs the existing builders (`build_embedded.py`, `build_binary.py`,
+`combine_installers.py`), so what the customer installs is what those scripts already produced.
+
+```
+python scripts/create_export.py --both                       # the hybrid package (on Linux)
+python scripts/create_export.py --windows --outdir out       # Windows half only (any system; install test needs Windows)
+python scripts/create_export.py --linux --outdir out         # Linux half only (Linux)
+python scripts/create_export.py --both --ref main --label rc1 --outdir dist/main
+python scripts/create_export.py --both --windows-zip W.zip --linux-zip L.zip     # combine halves built elsewhere
+```
+
+| | cortex-bridge | here |
+|---|---|---|
+| Required mode flag | `--online`, `--offline`, `--both` | `--windows`, `--linux`, `--both` |
+| `--outdir`, `--label`, `--no-verify`, `--allow-license-gaps` | yes | yes (same meaning) |
+| Build from a git ref | `--bridge-ref` (default `WORKTREE`) | `--ref` (default `WORKTREE`: the working tree, uncommitted changes included) |
+| `--python`, `--online-python`, `--platform` | per-Python wheel zips | not needed: the Windows package carries its own Python and the Linux program is Python-independent |
+| Sidecars beside each zip | `.sha256`, `.sbom.cdx.json`, `.buildinfo` | the same three |
+| Inside the zip | `BUILDINFO`, `MANIFEST.sha256`, licences | `BUILDINFO`, `MANIFEST.sha256` (per OS folder), licences, `LEGAL_REVIEW.txt` |
+
+`MANIFEST.sha256` (`<sha256>  <path>` per file) is now written by all three builders, and `install.py` checks it before
+it installs anything: a changed or missing file stops the install and names the file. A zip without one still installs
+and says so. In a combined zip each OS folder keeps its manifest, minus the line for `install.py` (the single one at
+the top).
+
+The Linux program is a PyInstaller build and can be made only on Linux, so on Windows `--both` needs `--linux-zip`. The
+script fails when a builder reports a package without a licence text, unless `--allow-license-gaps` is given. The
+finished zips are install-tested with their own `install.py` and the installed server is started over MCP, for the
+operating system the script runs on; the other system's half is reported as not run. The `.buildinfo` file is an internal
+record (commit, parts and their hashes, uncommitted-change note) and is never shipped.
+
 ### What the installer does on the target machine
 
 `install.py` reads `BUILDINFO` and refuses a wrong operating system or a too-old glibc. In a combined
