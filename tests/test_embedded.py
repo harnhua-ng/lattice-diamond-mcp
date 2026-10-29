@@ -745,3 +745,49 @@ def test_exiting_at_the_question_stops_the_install(tmp_path, monkeypatch):
     args = install.parse_args(["--install-dir", str(tmp_path / "target")])
     with pytest.raises(install.InstallError, match="Nothing was changed"):
         install.place_folder(args, str(tmp_path / "zip" / "python"), str(tmp_path / "target"))
+
+
+# ------------------------------------------------- naming the program that has files open (Windows Restart Manager)
+
+def test_the_restart_manager_is_not_asked_off_windows_and_never_raises_where_it_is_missing(tmp_path, monkeypatch):
+    (tmp_path / "a.txt").write_text("x")
+    monkeypatch.setattr(install, "IS_WINDOWS", False)
+    assert install.open_file_holders([str(tmp_path)]) == []
+    monkeypatch.setattr(install, "IS_WINDOWS", True)          # on this system there is no ctypes.WinDLL or rstrtmgr
+    assert install.open_file_holders([str(tmp_path)]) == []
+    assert install.open_file_holders([str(tmp_path / "nothing")]) == []
+
+
+def test_the_files_to_ask_about_are_those_below_the_existing_folders_up_to_a_limit(tmp_path):
+    (tmp_path / "sub").mkdir()
+    for name in ("a.txt", "sub/b.txt", "sub/c.txt"):
+        (tmp_path / name).write_text("x")
+    found = install.files_under([str(tmp_path), str(tmp_path / "missing")])
+    assert sorted(Path(f).name for f in found) == ["a.txt", "b.txt", "c.txt"]
+    assert len(install.files_under([str(tmp_path)], limit=2)) == 2
+
+
+def test_programs_with_files_open_are_named_but_not_offered_for_stopping(tmp_path, monkeypatch):
+    embedded_source(tmp_path / "zip")
+    failing_swap(monkeypatch, 99)
+    monkeypatch.setattr(install, "holders_of", lambda *folders: [])
+    monkeypatch.setattr(install, "open_file_holders", lambda folders: ["1234 Microsoft Defender Antivirus Service", "5678 Windows Search"])
+    asked = []
+    monkeypatch.setattr(install, "free_directory", lambda args, path: asked.append(path))
+    args = install.parse_args(["--install-dir", str(tmp_path / "target")])
+    with pytest.raises(install.InstallError) as caught:
+        install.place_folder(args, str(tmp_path / "zip" / "python"), str(tmp_path / "target"))
+    message = str(caught.value)
+    assert "1234 Microsoft Defender Antivirus Service" in message and "5678 Windows Search" in message and "Windows Defender is MsMpEng.exe" in message
+    assert asked == []                                   # never offered for stopping: it is not ours
+
+
+def test_a_program_found_both_ways_is_not_listed_twice(tmp_path, monkeypatch):
+    embedded_source(tmp_path / "zip")
+    failing_swap(monkeypatch, 99)
+    monkeypatch.setattr(install, "holders_of", lambda *folders: ["4242 python.exe"])
+    monkeypatch.setattr(install, "open_file_holders", lambda folders: ["4242 Python", "9 Other"])
+    monkeypatch.setattr(install, "free_directory", lambda args, path: None)
+    args = install.parse_args(["--install-dir", str(tmp_path / "target")])
+    with pytest.raises(install.InstallError, match="Still running from it: 4242 python.exe"):
+        install.place_folder(args, str(tmp_path / "zip" / "python"), str(tmp_path / "target"))

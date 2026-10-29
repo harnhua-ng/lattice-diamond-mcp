@@ -533,6 +533,66 @@ def swap_into_place(staging, install_dir):
         raise first
 
 
+def files_under(folders, limit=4000):
+    """Paths of the files below the folders that exist, at most `limit` of them."""
+    found = []
+    for folder in folders:
+        for base, _, names in os.walk(folder):
+            for name in names:
+                found.append(os.path.join(base, name))
+                if len(found) >= limit:
+                    return found
+    return found
+
+
+def open_file_holders(folders):
+    """'PID name' of every program that has a file below the folders open, Python or not, from Windows' Restart Manager
+    (the service behind "this file is in use by ..."). For diagnosis only: these are as likely to be antivirus or a file
+    indexer as anything of ours, so they are named in an error and never offered for stopping. Windows only; returns []
+    where it cannot answer and never raises."""
+    if not IS_WINDOWS:
+        return []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        rstrtmgr = ctypes.WinDLL("rstrtmgr")
+
+        class FILETIME(ctypes.Structure):
+            _fields_ = [("dwLowDateTime", wintypes.DWORD), ("dwHighDateTime", wintypes.DWORD)]
+
+        class RM_UNIQUE_PROCESS(ctypes.Structure):
+            _fields_ = [("dwProcessId", wintypes.DWORD), ("ProcessStartTime", FILETIME)]
+
+        class RM_PROCESS_INFO(ctypes.Structure):
+            _fields_ = [("Process", RM_UNIQUE_PROCESS), ("strAppName", ctypes.c_wchar * 256),
+                        ("strServiceShortName", ctypes.c_wchar * 64), ("ApplicationType", ctypes.c_int),
+                        ("AppStatus", ctypes.c_ulong), ("TSSessionId", wintypes.DWORD), ("bRestartable", wintypes.BOOL)]
+
+        files = files_under(folders)
+        if not files:
+            return []
+        session, key = wintypes.DWORD(0), ctypes.create_unicode_buffer(33)
+        if rstrtmgr.RmStartSession(ctypes.byref(session), 0, key) != 0:
+            return []
+        try:
+            names = (ctypes.c_wchar_p * len(files))(*files)
+            if rstrtmgr.RmRegisterResources(session, len(files), names, 0, None, 0, None) != 0:
+                return []
+            needed, count, reasons = wintypes.UINT(0), wintypes.UINT(0), wintypes.DWORD(0)
+            result = rstrtmgr.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), None, ctypes.byref(reasons))
+            if result != 234 or not needed.value:      # 234 = ERROR_MORE_DATA: there are holders, and this many
+                return []
+            count = wintypes.UINT(needed.value)
+            holders = (RM_PROCESS_INFO * needed.value)()
+            if rstrtmgr.RmGetList(session, ctypes.byref(needed), ctypes.byref(count), holders, ctypes.byref(reasons)) != 0:
+                return []
+            return ["%d %s" % (holders[i].Process.dwProcessId, holders[i].strAppName) for i in range(count.value)]
+        finally:
+            rstrtmgr.RmEndSession(session)
+    except Exception:  # nosec B110 - a diagnostic must never make an install fail
+        return []
+
+
 def holders_of(*folders):
     """'PID name' of every process running from any of the folders that exist."""
     found = []
@@ -566,6 +626,7 @@ def place_folder(args, source, install_dir, what="program", retried=False):
         swap_into_place(staging, install_dir)
     except OSError as exc:
         holders = holders_of(install_dir, staging)
+        others = [h for h in open_file_holders([install_dir, staging]) if h.split()[0] not in {x.split()[0] for x in holders}]
         shutil.rmtree(staging, ignore_errors=True)
         if holders and not retried:
             # A server started, or began holding files, after the check before the copy: ask the same question again
@@ -576,11 +637,19 @@ def place_folder(args, source, install_dir, what="program", retried=False):
         if holders:
             raise InstallError("Could not install into %s (%s). Still running from it: %s. Close your AI client or stop "
                                "those processes and run the installer again." % (install_dir, exc, ", ".join(holders)))
+        if others:
+            raise InstallError(
+                "Could not install into %s (%s).\nNo MCP server was found running from it, but Windows reports that these "
+                "programs have files in it open: %s.\nIf one is a security product (Windows Defender is MsMpEng.exe) or the "
+                "Windows Search indexer, it is scanning the new files: wait a minute and run the installer again, or exclude "
+                "%s from real-time scanning. If it is a shell, Explorer window or editor, close it." %
+                (install_dir, exc, ", ".join(others[:8]), os.path.dirname(install_dir)))
         raise InstallError(
-            "Could not install into %s (%s).\nNo MCP server was found running from it. Windows refused to move the copied "
-            "files into place, which is usually antivirus (Windows Defender) or a file indexer still scanning them. Wait a "
-            "minute and run the installer again; if it keeps happening, exclude %s from real-time scanning. If your AI client "
-            "has the server running from an earlier install, close it too." % (install_dir, exc, os.path.dirname(install_dir)))
+            "Could not install into %s (%s).\nNo MCP server was found running from it, and Windows did not say which program "
+            "has files open there. This is usually antivirus (Windows Defender) or a file indexer still scanning the new "
+            "files. Wait a minute and run the installer again; if it keeps happening, exclude %s from real-time scanning. If "
+            "your AI client has the server running from an earlier install, close it too." %
+            (install_dir, exc, os.path.dirname(install_dir)))
     return True
 
 

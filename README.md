@@ -603,7 +603,10 @@ leaves both in place. The check can miss a holder that appears later, and Window
 copied folder into place while anything has a file in it open (antivirus and file indexers do, for a moment, even when no
 server runs). That last step is therefore retried for about 20 seconds, then done by copying the files instead of renaming
 the folder; if a process is found running from the folder at that point the same question is asked again and the copy
-redone, and if none is found the error says so and points at antivirus instead of blaming the AI client. A folder the installer did not create is never checked or touched. The mechanism is
+redone, and if none is found the error says so and points at antivirus instead of blaming the AI client. In that case it also asks
+Windows' Restart Manager (the service behind "this file is in use by ...", through `ctypes`) which programs have files open
+in the folder and names them, for example `MsMpEng.exe` for Defender; they are only named, never offered for stopping, and
+if the query fails the error simply omits them. A folder the installer did not create is never checked or touched. The mechanism is
 the one in `scripts/install.py` of cortex-bridge (`--if-locked`).
 
 Both mark the folder they create with `.diamond-mcp-installer` and never reuse, replace or
