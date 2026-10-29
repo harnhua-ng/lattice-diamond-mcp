@@ -48,6 +48,41 @@ with `git archive`; "after" is the working tree with the changes described below
 The probes that failed before the changes were chosen to fail on the old code and were run against
 it to confirm that: each failure below is the observed behaviour of commit 9de65fe.
 
+## Re-run, 2026-10-29
+
+All five steps run again with `run_scans.py` on commit 59a32ae plus the licence-notice change described below, which adds, since the results above: the
+running-server prompt and its process killing in `scripts/install.py`, the wheels installer without a
+launcher program (`python -I -m diamond_mcp`), the environment in the per-user data folder, and the
+registration name `lattice-diamond-mcp`. Same machine and Python as above (Linux, Python 3.11.7, mcp 1.30.0).
+The JSON is in `results/rerun_2026-10-29/`, with local paths replaced as before.
+
+| Scan | Result |
+|---|---|
+| Bandit, `src`, `scripts` and `security_scan` | 0 High, 0 Medium, 35 Low (informational, almost all "subprocess is used"). The Low count is higher than the 15 above because `security_scan` is now included, the installer gained process-handling code, and `fetch_python_notices.py` runs `zstd` and downloads over https. With suppressions ignored, four Medium findings appear; each has its reason beside it: B314 `project.py:73` (the file is refused if it declares a DTD or entity), B103 `dast_stdio.py:190` (a deliberately executable test file in a scratch folder), B310 `dast_stdio.py:360` and `osv_check.py:66` (`urlopen` of a fixed `http://127.0.0.1` or `https://api.osv.dev` URL, never a user-supplied scheme). |
+| Secrets scan | 0 hits in 88 files (the vendored licence notices included) |
+| OSV | 0 advisories: 27 runtime and 18 build-only packages (the `uv.lock` pins are unchanged) |
+| Parser and Tcl-quoting fuzzing | 0 findings |
+| Dynamic probes over stdio | 24 probes, 24 passed, 0 skipped, 0 failed |
+| Unit tests | 418 passed, 6 skipped |
+
+New code that was not in the earlier scan, and what that scan says about it:
+
+- **Killing a running server (`install.py`)**: processes are stopped only after the user answers `a` or passes
+  `--if-locked kill` (or `DIAMOND_MCP_IF_LOCKED=kill`). With nobody to ask, the installer exits with status 1 and changes
+  nothing. Only processes whose program lies inside the installer's own marked folder are listed. Every helper
+  subprocess runs with `stdin` closed, and none uses a shell. Bandit reports the subprocess calls as Low (B404, B603,
+  B607 family) and nothing else. The Linux path was exercised against a real process; the Windows path (`taskkill`,
+  detection by locked files) is covered only by unit tests with stand-ins.
+- **Removing the launcher program**: the wheels zip now installs no program of ours, and the build and the CI
+  verify step fail if `bin/diamond-mcp` or `Scripts/diamond-mcp.exe` appears. The registered command is the
+  environment's Python with `-I`, which ignores `PYTHONPATH`, the working directory and user site-packages, so a stray
+  `mcp.py` in the folder the client starts from is not imported.
+- **Environment folder**: the default moved into the per-user data folder (`%LOCALAPPDATA%` or `$XDG_DATA_HOME`),
+  which the user owns and which is not roaming. The installer still refuses to reuse or delete a folder that lacks its
+  marker file.
+- **Old registration name**: the installer removes a registration named `diamond` only if it points at this program;
+  one that points elsewhere, or one the user chose with `--name diamond`, is left alone.
+
 ## Findings and what was done
 
 Numbering is local to this scan. The last column names the corresponding cortex-bridge item.
@@ -74,6 +109,17 @@ Numbering is local to this scan. The last column names the corresponding cortex-
 - **The installer zips are not signed.** A checksum beside the zip does not help against someone who can replace
   both (bridge I-1 1b and 1c). Code signing is also what Windows Defender and SmartScreen respond to.
 - **No SBOM for the wheels zip and no provenance attestation** for either zip (the standalone zip has an SBOM).
+- **Licence notices for libraries inside the embedded Python (standalone zip): fixed 2026-10-29.** The CPython from
+  python-build-standalone has OpenSSL (3.5.9 by its version string), zlib 1.3.2, expat 2.9.0, bzip2, liblzma, mpdecimal,
+  libedit, ncurses, libffi, libuuid and SQLite compiled into `libpython3.11.so.1.0` (on Windows, separate DLLs beside
+  `python311.dll`), and the zip carried only CPython's own `LICENSE.txt`. The notices are now vendored in
+  `scripts/python_notices/` from the project's release 20261021 (the archives' SHA-256 checked against the release's
+  `SHA256SUMS`, each file's hash in `SOURCES.txt`), copied into the zip, and listed in `LEGAL_REVIEW.txt` as item 3.
+  The build stops if the interpreter is from a different release. Still open: the Windows set was chosen from the
+  DLLs in the release archive, not from a Windows build of this program, and Legal has not reviewed any of it.
+- **The wheels zip carries the `cryptography` wheel** (via the `mcp` dependency), which has OpenSSL linked in, and
+  `cffi`, which carries libffi. Their licence files are in `THIRD_PARTY_LICENSES`; the standalone program does not
+  contain either package. No wheel for `pip`, `setuptools` or an interpreter is in either zip.
 - **Linux only.** Every scan ran on Linux with Python 3.11. The Windows legs of the CI workflows have never run
   anywhere; the symlink probe is skipped on Windows. `security-scan.yml` has never run on GitHub.
 - **Fuzzing is seeded, not coverage-guided**: 300 mutated inputs per target. A clean result is absence of evidence.
@@ -93,3 +139,9 @@ Numbering is local to this scan. The last column names the corresponding cortex-
   the project folder.
 - A `.ldf` that declares a DTD or entity is refused.
 - The wheels installer installs from `requirements.txt` (hashes) instead of `constraints.txt`.
+- The server registers as `lattice-diamond-mcp` (it was `diamond`); tool names change from `mcp__diamond__*` to
+  `mcp__lattice-diamond-mcp__*`, so saved permission rules need the new prefix.
+- The wheels environment is created in `%LOCALAPPDATA%\lattice-diamond-mcp\venv` (`~/.local/share/lattice-diamond-mcp/venv`
+  on Linux) instead of `~/diamond-mcp-venv`, and the wheels zip installs no `diamond-mcp` program.
+- If a server is running from the folder being replaced, the installer asks before stopping it
+  (`--if-locked ask|kill|exit`).

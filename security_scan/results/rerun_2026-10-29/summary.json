@@ -1,0 +1,32 @@
+[
+  {
+    "step": "bandit",
+    "exit": 0,
+    "seconds": 0.7,
+    "detail": "0 high, 0 medium, 35 low (low are informational)"
+  },
+  {
+    "step": "secrets",
+    "exit": 0,
+    "seconds": 0.1,
+    "detail": "secrets scan: 88 file(s), 0 hit(s)"
+  },
+  {
+    "step": "osv",
+    "exit": 0,
+    "seconds": 1.5,
+    "detail": "osv check: 27 runtime and 18 build-only packages, 0 with advisories"
+  },
+  {
+    "step": "dast_parsers",
+    "exit": 0,
+    "seconds": 1.1,
+    "detail": "dast_parsers: 0 finding(s)"
+  },
+  {
+    "step": "dast_stdio",
+    "exit": 0,
+    "seconds": 4.2,
+    "detail": "dast_stdio: 24 probes, 24 passed (0 skipped), 0 failed"
+  }
+]

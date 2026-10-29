@@ -17,3 +17,7 @@
 *.exe binary
 *.dll binary
 *.so binary
+
+# Third-party notices are copied unchanged and their SHA-256 is recorded in SOURCES.txt, so keep their bytes
+# (some upstream files use CRLF).
+scripts/python_notices/** -text

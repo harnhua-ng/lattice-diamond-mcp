@@ -324,9 +324,26 @@ to link or embed the bootloader in other programs and distribute the result with
 from those files; its run-time hooks are Apache-2.0. The licence file is shipped as a notice, as a
 precaution, and not because the exception is known to require one.
 
+#### Libraries inside the embedded Python (notices)
+
+The interpreter has OpenSSL, zlib, expat, bzip2, liblzma, mpdecimal and, on Linux, libedit, ncurses, libffi,
+libuuid and SQLite compiled into `libpython3.11.so.1.0` (on Windows, beside `python311.dll`). The interpreter
+that uv installs ships no notices for them. `scripts/python_notices/<platform>/` holds the ones that
+python-build-standalone publishes for the release in use; the build copies them, unmodified, into
+`THIRD_PARTY_LICENSES/cpython-<version>/embedded-libraries/` and lists them in `THIRD_PARTY_LICENSES.txt`
+and `LEGAL_REVIEW.txt`. `SOURCES.txt` there records the release, the SHA-256 of the archive each file came
+from (checked against the release's `SHA256SUMS`) and of each file. The build stops if the interpreter's
+release (its `BUILD` file) is not the release recorded in `scripts/python_notices/RELEASE`.
+
+After changing `UV_VERSION` or `PYTHON_VERSION`, or when uv moves to a newer python-build-standalone
+release, run `python scripts/fetch_python_notices.py --release <tag>` (needs `zstd`), read the diff, and have
+Legal look at any library that was added or whose licence changed. Tcl/Tk, X11, Berkeley DB and zstd are not
+shipped because the program does not contain them. The files are marked `-text` in `.gitattributes`, so git
+does not change their line endings.
+
 Each build writes `LEGAL_REVIEW.txt` into the zip and prints a pointer to it. It lists, for Legal,
-the PyInstaller item (what is embedded, what the shipped licence says, the open question) and the
-product `LICENSE`, which is a copy of the cortex-bridge text. It is generated from the licence file that ships, and says
+the PyInstaller item (what is embedded, what the shipped licence says, the open question), the libraries inside
+the embedded Python, and the product `LICENSE`, which is a copy of the cortex-bridge text. It is generated from the licence file that ships, and says
 `WARNING` instead of summarising the terms if the expected wording is no longer there, so a future
 PyInstaller release with different terms cannot pass unnoticed. It states facts, not conclusions.
 The wheels zip contains no PyInstaller code.

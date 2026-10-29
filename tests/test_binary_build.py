@@ -243,6 +243,55 @@ def test_collect_licences_flags_a_package_without_one(tmp_path):
     assert "odd 1" in missing and ("cpython " + build.PYTHON_VERSION) in missing
 
 
+def make_notices(tmp_path, release="20261021", platform="linux-x86_64"):
+    notices = tmp_path / "notices"
+    (notices / platform).mkdir(parents=True, exist_ok=True)
+    (notices / platform / "LICENSE.openssl-3.txt").write_text("Apache")
+    (notices / platform / "LICENSE.zlib.txt").write_text("Zlib")
+    (notices / "RELEASE").write_text(release + "\n")
+    return notices
+
+
+def test_embedded_notices_are_copied_next_to_the_cpython_licence(tmp_path):
+    python_root = tmp_path / "py"
+    python_root.mkdir()
+    (python_root / "BUILD").write_text("20261021")
+    index, problems = build.collect_embedded_notices("linux-x86_64", python_root, tmp_path / "out", make_notices(tmp_path))
+    target = tmp_path / "out" / ("cpython-" + build.PYTHON_VERSION) / "embedded-libraries"
+    assert (target / "LICENSE.openssl-3.txt").read_text() == "Apache" and (target / "LICENSE.zlib.txt").exists()
+    assert problems == [] and any("LICENSE.zlib.txt" in line for line in index)
+
+
+def test_embedded_notices_refuse_an_interpreter_from_another_release(tmp_path):
+    python_root = tmp_path / "py"
+    python_root.mkdir()
+    (python_root / "BUILD").write_text("20270101")
+    with pytest.raises(build.BuildError, match="20270101.*20261021"):
+        build.collect_embedded_notices("linux-x86_64", python_root, tmp_path / "out", make_notices(tmp_path))
+
+
+def test_embedded_notices_report_what_cannot_be_confirmed_or_is_missing(tmp_path):
+    python_root = tmp_path / "py"
+    python_root.mkdir()  # no BUILD file
+    _, problems = build.collect_embedded_notices("linux-x86_64", python_root, tmp_path / "out", make_notices(tmp_path))
+    assert len(problems) == 1 and "unconfirmed" in problems[0]
+    index, problems = build.collect_embedded_notices("windows-x86_64", python_root, tmp_path / "out2", make_notices(tmp_path))
+    assert index == [] and "fetch_python_notices" in problems[0]
+
+
+def test_the_checked_in_notices_cover_every_library_the_manifest_names():
+    for platform in ("linux-x86_64", "windows-x86_64"):
+        have = {p.name for p in (build.NOTICES_DIR / platform).glob("LICENSE.*.txt")}
+        assert have and all(p.stat().st_size > 200 for p in (build.NOTICES_DIR / platform).glob("LICENSE.*.txt"))
+        assert "LICENSE.openssl-3.txt" in have and "LICENSE.zlib.txt" in have and "LICENSE.expat.txt" in have
+    assert (build.NOTICES_DIR / "RELEASE").read_text().strip().isdigit()
+    sources = (build.NOTICES_DIR / "SOURCES.txt").read_text()
+    import hashlib
+    for platform in ("linux-x86_64", "windows-x86_64"):
+        for path in (build.NOTICES_DIR / platform).glob("LICENSE.*.txt"):
+            assert hashlib.sha256(path.read_bytes()).hexdigest() in sources, path.name
+
+
 # ------------------------------------------------------------------------ legal notes
 
 REAL_TERMS = ("In addition to the permissions in the GNU General Public License, the authors give you unlimited permission "
@@ -252,9 +301,17 @@ REAL_TERMS = ("In addition to the permissions in the GNU General Public License,
 
 def legal(**overrides):
     args = dict(version="0.1.0", platform="linux-x86_64", pyinstaller_version="6.22.3",
-                licence_relpath="THIRD_PARTY_LICENSES/pyinstaller-6.22.3/licenses/COPYING.txt", licence_text=REAL_TERMS)
+                licence_relpath="THIRD_PARTY_LICENSES/pyinstaller-6.22.3/licenses/COPYING.txt", licence_text=REAL_TERMS,
+                embedded_notices=["LICENSE.zlib.txt"])
     args.update(overrides)
     return build.legal_review_text(**args)
+
+
+def test_legal_review_lists_the_notices_of_the_libraries_inside_the_interpreter():
+    text = legal(embedded_notices=["LICENSE.openssl-3.txt", "LICENSE.zlib.txt"])
+    assert "3. Libraries compiled into the embedded Python interpreter" in text and "LICENSE.openssl-3.txt" in text
+    assert "WARNING: no notices" not in text
+    assert "WARNING: no notices for these libraries" in legal(embedded_notices=())
 
 
 def test_legal_review_states_the_facts_and_names_the_shipped_licence_file():

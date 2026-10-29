@@ -69,6 +69,7 @@ REPO = Path(__file__).resolve().parents[1]
 PACKAGE = "lattice-diamond-mcp"
 UV_VERSION = "0.13.5"          # the uv that resolved the lock and fetches the interpreter below
 PYTHON_VERSION = "3.11.17"     # the CPython embedded in the program (uv-managed, glibc 2.17 build)
+NOTICES_DIR = REPO / "scripts" / "python_notices"   # notices of the libraries inside the embedded CPython (fetch_python_notices.py)
 MAX_GLIBC = (2, 17)            # Red Hat 7; the build fails if a bundled file needs newer
 IS_WINDOWS = sys.platform == "win32"
 EXE_NAME = "diamond-mcp.exe" if IS_WINDOWS else "diamond-mcp"
@@ -415,8 +416,41 @@ def runtime_package_names(sbom):
     return {normalise(c["name"]) for c in sbom.get("components", []) if c.get("type") == "library" and c.get("name") not in (root, "cpython")}
 
 
-def collect_licences(site_packages, wanted, python_root, out_dir):
-    """Copy licence files for the shipped packages (plus PyInstaller, whose bootloader is in the output)."""
+def collect_embedded_notices(platform, python_root, out_dir, notices_dir=None):
+    """Copy the notices of the libraries compiled into the embedded CPython (OpenSSL, zlib, expat and others).
+
+    The interpreter uv installs carries none of them, so they come from scripts/python_notices/, which
+    fetch_python_notices.py fills from the python-build-standalone release. Returns (index lines, problems).
+    A BuildError if the interpreter in use is from another release than the notices: its libraries may differ.
+    """
+    folder = (notices_dir or NOTICES_DIR) / platform
+    files = sorted(folder.glob("LICENSE.*.txt")) if folder.is_dir() else []
+    if not files:
+        return [], ["notices for the libraries inside cpython (nothing in %s; run scripts/fetch_python_notices.py)" % folder]
+    release_file = (notices_dir or NOTICES_DIR) / "RELEASE"
+    release = release_file.read_text(encoding="utf-8").strip() if release_file.is_file() else ""
+    build_file = python_root / "BUILD"
+    used = build_file.read_text(encoding="utf-8").strip() if build_file.is_file() else ""
+    if used and used != release:
+        raise BuildError("The embedded CPython is from python-build-standalone release %s, but scripts/python_notices/ holds the "
+                         "notices of release %s. Run scripts/fetch_python_notices.py --release %s and have Legal read the diff."
+                         % (used, release or "(unknown)", used))
+    target = out_dir / ("cpython-" + PYTHON_VERSION) / "embedded-libraries"
+    target.mkdir(parents=True, exist_ok=True)
+    index = ["    Libraries compiled into this interpreter (python-build-standalone release %s), notices in embedded-libraries/:"
+             % (release or "unknown")]
+    for path in files:
+        shutil.copyfile(path, target / path.name)
+        index.append("        embedded-libraries/" + path.name)
+    problems = [] if used else ["the python-build-standalone release of the embedded cpython could not be read (no BUILD file), so "
+                                "its match with release %s of the notices is unconfirmed" % release]
+    return index, problems
+
+
+def collect_licences(site_packages, wanted, python_root, out_dir, platform=None):
+    """Copy licence files for the shipped packages (plus PyInstaller, whose bootloader is in the output).
+
+    With `platform`, also the notices of the libraries inside the embedded CPython."""
     index = ["Third-party software in this installer, with the licence files found for each.", ""]
     missing = []
     wanted = set(wanted) | {"pyinstaller"}
@@ -452,6 +486,10 @@ def collect_licences(site_packages, wanted, python_root, out_dir):
     else:
         index.append("    (no licence file found)")
         missing.append("cpython " + PYTHON_VERSION)
+    if platform:
+        lines, problems = collect_embedded_notices(platform, python_root, out_dir)
+        index.extend(lines)
+        missing.extend(problems)
     return "\n".join(index) + "\n", missing
 
 
@@ -461,7 +499,8 @@ BOOTLOADER_EXCEPTION = "unlimited permission to link or embed compiled bootloade
 HOOKS_APACHE = "Apache License"
 
 
-def legal_review_text(*, version, platform, pyinstaller_version, licence_relpath, licence_text, product_licence_included=True):
+def legal_review_text(*, version, platform, pyinstaller_version, licence_relpath, licence_text, product_licence_included=True,
+                      embedded_notices=()):
     """The plain-text list of items for Legal, built from the licence file that ships in the zip.
 
     It states what was found, not a legal conclusion. The summary of PyInstaller's terms is only
@@ -520,6 +559,36 @@ def legal_review_text(*, version, platform, pyinstaller_version, licence_relpath
             "",
             "   The source repository has no LICENSE file, so none was bundled. The approved licence text",
             "   must be added before release.",
+            "",
+        ]
+    lines += [
+        "3. Libraries compiled into the embedded Python interpreter",
+        "",
+        "   The program embeds CPython %s from python-build-standalone (PSF-2.0; its LICENSE.txt is in" % PYTHON_VERSION,
+        "   THIRD_PARTY_LICENSES/cpython-%s/). That interpreter has other libraries compiled in or" % PYTHON_VERSION,
+        "   shipped beside it (OpenSSL, zlib, expat and others). The interpreter that uv installs carries no notices",
+        "   for them, so the build copies the ones that python-build-standalone publishes for the same release",
+        "   (scripts/python_notices/, recorded with their SHA-256 in SOURCES.txt there), unmodified.",
+        "",
+    ]
+    if embedded_notices:
+        lines.append("   Shipped in this zip, under THIRD_PARTY_LICENSES/cpython-%s/embedded-libraries/:" % PYTHON_VERSION)
+        lines += ["     " + name for name in embedded_notices]
+        lines += [
+            "",
+            "   Which libraries are in the program was read from symbols and version strings in the interpreter's",
+            "   library (Linux) or from the DLLs beside python311.dll (Windows). Tcl/Tk, X11 and Berkeley DB are not in",
+            "   the program, so their notices are not shipped. The C library (glibc, or the Windows system libraries)",
+            "   is the customer's own and is not distributed.",
+            "",
+            "   Question for Legal: are these notices, and the PSF-2.0 and PyInstaller texts above, enough for the",
+            "   product's distribution terms?",
+            "",
+        ]
+    else:
+        lines += [
+            "   WARNING: no notices for these libraries were found for this platform, so none are shipped.",
+            "   Run scripts/fetch_python_notices.py and rebuild before this is distributed.",
             "",
         ]
     return "\n".join(lines)
@@ -636,7 +705,7 @@ def main(argv=None):
 
             python_root = Path(run([str(work / "venv" / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")), "-c",
                                     "import sys; print(sys.base_prefix)"], env=clean_env()).strip())
-            licence_index, missing = collect_licences(site_packages, bundled, python_root, stage / "THIRD_PARTY_LICENSES")
+            licence_index, missing = collect_licences(site_packages, bundled, python_root, stage / "THIRD_PARTY_LICENSES", platform=platform)
 
             licence_present = (REPO / "LICENSE").is_file()
             licence_file = next(iter(sorted((stage / "THIRD_PARTY_LICENSES").glob("pyinstaller-*/licenses/COPYING.txt"))), None)
@@ -644,7 +713,8 @@ def main(argv=None):
                 version=version, platform=platform, pyinstaller_version=pyinstaller_version,
                 licence_relpath=licence_file.relative_to(stage).as_posix() if licence_file else None,
                 licence_text=licence_file.read_text(encoding="utf-8", errors="replace") if licence_file else "",
-                product_licence_included=licence_present)
+                product_licence_included=licence_present,
+                embedded_notices=sorted(p.name for p in (stage / "THIRD_PARTY_LICENSES" / ("cpython-" + PYTHON_VERSION) / "embedded-libraries").glob("LICENSE.*.txt")))
             (stage / "LEGAL_REVIEW.txt").write_text(legal, encoding="utf-8")
             if licence_present:
                 shutil.copyfile(REPO / "LICENSE", stage / "LICENSE")

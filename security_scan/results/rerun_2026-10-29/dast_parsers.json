@@ -1,0 +1,62 @@
+{
+  "tool": "dast_parsers.py",
+  "src": "<repo>/src",
+  "seed": 20261026,
+  "cases_per_target": 300,
+  "python": "3.11.7",
+  "targets": [
+    {
+      "target": "reports.parse_par",
+      "cases": 317,
+      "unexpected_exceptions": {},
+      "examples": {},
+      "slow_calls": [],
+      "hangs": [],
+      "finding": false
+    },
+    {
+      "target": "reports.parse_twr",
+      "cases": 319,
+      "unexpected_exceptions": {},
+      "examples": {},
+      "slow_calls": [],
+      "hangs": [],
+      "finding": false
+    },
+    {
+      "target": "reports.parse_mrp",
+      "cases": 318,
+      "unexpected_exceptions": {},
+      "examples": {},
+      "slow_calls": [],
+      "hangs": [],
+      "finding": false
+    },
+    {
+      "target": "project.parse_ldf + find_missing_sources",
+      "cases": 316,
+      "unexpected_exceptions": {},
+      "examples": {},
+      "slow_calls": [],
+      "hangs": [],
+      "finding": false
+    },
+    {
+      "target": "config.load_config_data",
+      "cases": 314,
+      "unexpected_exceptions": {},
+      "examples": {},
+      "slow_calls": [],
+      "hangs": [],
+      "finding": false
+    },
+    {
+      "target": "diamond_session.tcl_quote (checked with tclsh)",
+      "cases": 320,
+      "skipped": null,
+      "not_one_word": [],
+      "finding": false
+    }
+  ],
+  "findings": 0
+}
