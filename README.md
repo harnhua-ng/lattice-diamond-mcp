@@ -509,7 +509,19 @@ Windows is present. pywin32 needs three more things, all handled by the build: i
 `import site` is enabled, so the `._pth` file now ends with `import site` (it still ignores `PYTHONPATH` and the current
 folder, and `install.py` starts Python with `-I`); the scripts in a wheel's `.data/scripts` are not installed; and the two
 programs it ships, `Pythonwin.exe` and `pythonservice.exe`, are deleted (recorded in `BUILDINFO` as `removed_programs` and in
-`LEGAL_REVIEW.txt`). The package now has about 59 unsigned native files, almost all pywin32's; `NATIVE_FILES.txt` lists them.
+`LEGAL_REVIEW.txt`). **Keeping the unsigned native files few.** A first version of this package had 59 unsigned third-party native files, 55 of
+them pywin32's. The build now ships only what the server uses, which leaves six: `_pydantic_core.pyd` and `rpds.pyd`
+(needed), and from pywin32 `win32api.pyd`, `win32job.pyd`, `_win32sysloader.pyd` and `pywintypes313.dll`
+(`mcp.os.win32.utilities` imports `pywintypes`, `win32api`, `win32con` and `win32job`; nothing else of pywin32 is used).
+Two lists in `scripts/build_embedded.py` hold the choices and the reasons: `PYWIN32_KEEP` (the eight files kept from the
+pywin32 wheel, including the pure-Python `pywintypes.py`, `win32con.py` and the bootstrap) and `OMITTED_PACKAGES` (pyjwt,
+cryptography, cffi and pycparser: only mcp's OAuth code uses pyjwt, and the standalone program does not contain them either).
+The build checks the trim itself: a wheel that no longer holds a kept file stops it; the import tables of the remaining
+native files are read and the build stops if one needs a DLL that was removed; a test starts the server and fails if any
+omitted package gets imported; and the Windows verify job imports `pywintypes`, `win32api`, `win32job`, `win32con` and the
+server for real. What a native module imports by name from Python code is invisible to the table check, so that last step is
+the one that proves the choice. Everything removed is recorded in `BUILDINFO` and `LEGAL_REVIEW.txt`. The package shrank from
+27 MB to 16 MB. `NATIVE_FILES.txt` lists every native file with its signer.
 
 **Which Python.** python.org builds an embeddable zip only for releases that have binaries, and stopped for 3.11 and
 3.12 at 3.11.9 and 3.12.10 (all later patch releases are source only). Shipping those would mean shipping an

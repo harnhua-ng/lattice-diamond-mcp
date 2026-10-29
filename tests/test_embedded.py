@@ -528,3 +528,104 @@ def test_the_inventory_names_every_native_file_and_who_signed_it(tmp_path):
     text = embedded.inventory_text(rows)
     assert "not validated" in text and "Totals:" in text and "1 unsigned" in text
     assert all(len(r[2]) == 64 for r in rows)
+
+
+# ------------------------------------------------------------ trimming what the server does not use
+
+def pe_with_imports(names):
+    """A minimal PE32+ file with one section that holds an import table naming `names`."""
+    data = bytearray(0x600)
+    data[0:2] = b"MZ"
+    struct.pack_into("<I", data, 0x3C, 0x80)
+    data[0x80:0x84] = b"PE\0\0"
+    struct.pack_into("<H", data, 0x80 + 6, 1)                       # one section
+    struct.pack_into("<H", data, 0x80 + 20, 240)                    # size of the optional header
+    struct.pack_into("<H", data, 0x80 + 24, 0x20B)
+    section_header = 0x80 + 24 + 240
+    virtual_address, raw_pointer = 0x1000, 0x200
+    struct.pack_into("<IIII", data, section_header + 8, 0x400, virtual_address, 0x400, raw_pointer)
+    table_rva = virtual_address
+    struct.pack_into("<II", data, 0x80 + 24 + 112 + 8, table_rva, 20 * (len(names) + 1))
+    strings = raw_pointer + 20 * (len(names) + 1)
+    for index, name in enumerate(names):
+        name_rva = virtual_address + (strings - raw_pointer)
+        struct.pack_into("<I", data, raw_pointer + 20 * index + 12, name_rva)
+        data[strings:strings + len(name) + 1] = name.encode() + b"\0"
+        strings += len(name) + 1
+    return bytes(data)
+
+
+def test_the_import_table_of_a_windows_module_is_read(tmp_path):
+    path = tmp_path / "m.pyd"
+    path.write_bytes(pe_with_imports(["python313.dll", "pywintypes313.dll", "KERNEL32.dll"]))
+    assert embedded.pe_imports(path) == ["python313.dll", "pywintypes313.dll", "KERNEL32.dll"]
+    other = tmp_path / "t.txt"
+    other.write_text("not a program")
+    assert embedded.pe_imports(other) == []
+
+
+def test_a_kept_file_that_needs_a_removed_dll_fails_the_build(tmp_path):
+    (tmp_path / "win32").mkdir()
+    (tmp_path / "win32" / "win32api.pyd").write_bytes(pe_with_imports(["python313.dll", "pywintypes313.dll", "kernel32.dll"]))
+    with pytest.raises(embedded.BuildError, match="win32api.pyd needs pywintypes313.dll, which was removed"):
+        embedded.check_native_dependencies(tmp_path, {"pywintypes313.dll", "pythoncom313.dll"})
+    embedded.check_native_dependencies(tmp_path, {"pythoncom313.dll"})               # it only needs what stayed
+    embedded.check_native_dependencies(tmp_path, set())
+
+
+def make_pywin32_like_wheel(folder):
+    members = {name: "x" for name in ("win32/win32api.pyd", "win32/win32ui.pyd", "pywin32.pth", "pythonwin/Pythonwin.exe",
+                                      "win32com/client/__init__.py", "pywin32-312.dist-info/METADATA", "pywin32-312.dist-info/licenses/LICENSE")}
+    return make_wheel(folder, "pywin32-312-cp313-cp313-win_amd64.whl", members)
+
+
+def test_a_wheel_is_trimmed_to_the_listed_files_and_keeps_its_dist_info(tmp_path):
+    wheels, site = tmp_path / "w", tmp_path / "site"
+    wheels.mkdir()
+    make_pywin32_like_wheel(wheels)
+    embedded.unpack_wheels(wheels, site)
+    pruned = embedded.prune_wheel_files(wheels, site, {"pywin32": ("win32/win32api.pyd", "pywin32.pth")})
+    assert pruned == {"pywin32": 3}
+    kept = sorted(p.relative_to(site).as_posix() for p in site.rglob("*") if p.is_file())
+    assert kept == ["pywin32-312.dist-info/METADATA", "pywin32-312.dist-info/licenses/LICENSE", "pywin32.pth", "win32/win32api.pyd"]
+    assert not (site / "win32com").exists() and not (site / "pythonwin").exists()           # emptied folders are gone too
+
+
+def test_trimming_refuses_a_wheel_whose_layout_changed(tmp_path):
+    wheels, site = tmp_path / "w", tmp_path / "site"
+    wheels.mkdir()
+    make_pywin32_like_wheel(wheels)
+    embedded.unpack_wheels(wheels, site)
+    with pytest.raises(embedded.BuildError, match="no longer holds win32/win32job.pyd"):
+        embedded.prune_wheel_files(wheels, site, {"pywin32": ("win32/win32job.pyd",)})
+
+
+def test_unused_packages_are_dropped_with_their_reasons_and_not_reported_as_missing(tmp_path):
+    wheels = tmp_path / "w"
+    wheels.mkdir()
+    make_wheel_with_requires(wheels, "mcp-1.0-py3-none-any", ["pyjwt[crypto]>=2.10", "anyio"])
+    make_wheel_with_requires(wheels, "anyio-4.0-py3-none-any", [])
+    make_wheel_with_requires(wheels, "pyjwt-2.0-py3-none-any", ["cryptography; extra == 'crypto'"])
+    make_wheel_with_requires(wheels, "cryptography-1.0-cp311-abi3-win_amd64", ["cffi"])
+    assert embedded.omit_packages(wheels, embedded.OMITTED_PACKAGES) == ["cryptography", "pyjwt"]
+    with pytest.raises(embedded.BuildError, match="pyjwt"):
+        embedded.check_closure(wheels, embedded.windows_marker_environment())
+    embedded.check_closure(wheels, embedded.windows_marker_environment(), exempt=set(embedded.OMITTED_PACKAGES))
+
+
+def test_the_pywin32_files_that_are_kept_are_the_four_modules_mcp_imports_and_what_they_load():
+    names = {Path(p).name for p in embedded.PYWIN32_KEEP}
+    assert {"win32api.pyd", "win32job.pyd", "win32con.py", "pywintypes.py", "pywintypes313.dll", "_win32sysloader.pyd",
+            "pywin32.pth", "pywin32_bootstrap.py"} == names
+    assert embedded.KEEP_ONLY == {"pywin32": embedded.PYWIN32_KEEP}
+
+
+def test_the_server_imports_none_of_the_packages_the_package_leaves_out():
+    code = ("import sys; sys.argv = ['x']; import diamond_mcp.server; "
+            "names = {'jwt': 'pyjwt', 'cryptography': 'cryptography', 'cffi': 'cffi', '_cffi_backend': 'cffi', 'pycparser': 'pycparser'}; "
+            "bad = sorted({names[m.split('.')[0]] for m in sys.modules if m.split('.')[0] in names}); "
+            "print('IMPORTED:' + ','.join(bad)); sys.exit(1 if bad else 0)")
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120,
+                            env=dict(os.environ, PYTHONPATH=str(SCRIPTS.parent / "src")))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert set(embedded.OMITTED_PACKAGES) == {"pyjwt", "cryptography", "cffi", "pycparser"}

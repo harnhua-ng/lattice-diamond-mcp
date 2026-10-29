@@ -70,6 +70,24 @@ PGP_FINGERPRINT = "7ED10B6531D7C8E1BC296021FC624643487034E5"
 PGP_KEY = REPO / "scripts" / "keys" / "python-windows-release-signing.asc"
 PGP_BAD_STATUS = ("BADSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "ERRSIG", "NO_PUBKEY")
 NOTICES_DIR = REPO / "scripts" / "python_notices"
+# Packages that are downloaded (at the versions and hashes in uv.lock) and then left out, with the reason. The server never
+# imports them: pyjwt (mcp's token handling for OAuth servers and clients, which this stdio server does not use) and what only
+# it pulls in. The standalone program, which PyInstaller builds from import analysis, does not contain them either, and a
+# test starts the server and fails if any of them is imported.
+OMITTED_PACKAGES = {
+    "pyjwt": "imported only by mcp's OAuth code, which a stdio server does not load",
+    "cryptography": "only pyjwt[crypto] pulls it in (it is a compiled library)",
+    "cffi": "only cryptography needs it (a compiled library)",
+    "pycparser": "only cffi needs it",
+}
+# pywin32 is needed on Windows because mcp.os.win32.utilities imports pywintypes, win32api, win32con and win32job at import
+# time, but a wheel with hundreds of files and ~55 unsigned native ones is far more than that. Only these files are kept
+# (paths in the wheel). Static import tables show win32api.pyd and win32job.pyd depend on no other pywin32 file than
+# pywintypes313.dll; pywintypes.py loads _win32sysloader to find that DLL; win32con is plain constants.
+PYWIN32_KEEP = ("pywin32.pth", "win32/win32api.pyd", "win32/win32job.pyd", "win32/_win32sysloader.pyd",
+                "win32/lib/pywintypes.py", "win32/lib/win32con.py", "win32/lib/pywin32_bootstrap.py",
+                "pywin32_system32/pywintypes%s.dll" % PYTHON_TAG[2:])
+KEEP_ONLY = {"pywin32": PYWIN32_KEEP}
 ONLY_PROGRAMS = {"python.exe"}                    # the only .exe allowed in the package (pythonw.exe is removed)
 
 
@@ -277,7 +295,7 @@ def wheel_requirements(wheel):
     return []
 
 
-def check_closure(wheels, environment):
+def check_closure(wheels, environment, exempt=()):
     """BuildError if a package some wheel needs on the target (its markers judged with `environment`, extras left out) is not
     among the wheels. This is what would have caught a missing pywin32, which makes the server fail at import on Windows."""
     Requirement = requirement_parser()
@@ -289,7 +307,7 @@ def check_closure(wheels, environment):
             if requirement.marker is not None and not requirement.marker.evaluate({**environment, "extra": ""}):
                 continue
             name = re.sub(r"[-_.]+", "-", requirement.name).lower()
-            if name not in present:
+            if name not in present and name not in exempt:
                 missing.setdefault(name, set()).add(wheel.name.split("-")[0])
     if missing:
         raise BuildError("Needed on Windows but not downloaded: " + "; ".join(
@@ -309,8 +327,101 @@ def download_wheels(wheels, own):
              "--disable-pip-version-check", "-c", str(constraints), str(own)])
     check_wheels_against_lock(wheels, locked, own.name.split("-")[0] + "-")
     log("  every dependency wheel matches the SHA-256 in uv.lock")
-    check_closure(wheels, environment)
-    log("  every package the wheels need on Windows is present")
+
+
+def dist_name(wheel):
+    return re.sub(r"[-_.]+", "-", wheel.name.split("-")[0]).lower()
+
+
+def omit_packages(wheels, omitted=None):
+    """Delete the wheels of the packages the server does not use; return their names. They were downloaded only so that
+    the choice is made from uv.lock's own closure and the hash check covers them."""
+    omitted = OMITTED_PACKAGES if omitted is None else omitted
+    removed = []
+    for wheel in sorted(wheels.glob("*.whl")):
+        if dist_name(wheel) in omitted:
+            removed.append(dist_name(wheel))
+            wheel.unlink()
+    return removed
+
+
+def prune_wheel_files(wheels, site_packages, keep_only=None):
+    """For the wheels named in `keep_only` ({name: paths}), delete every unpacked file but the listed ones and the wheel's
+    dist-info. BuildError when a listed file is not in the wheel (its layout changed). Returns {name: files removed}."""
+    keep_only = KEEP_ONLY if keep_only is None else keep_only
+    pruned = {}
+    for wheel in sorted(wheels.glob("*.whl")):
+        name = dist_name(wheel)
+        if name not in keep_only:
+            continue
+        with zipfile.ZipFile(wheel) as archive:
+            members = [m.filename for m in archive.infolist() if not m.is_dir() and not m.filename.split("/")[0].endswith(".data")]
+        missing = [path for path in keep_only[name] if path not in members]
+        if missing:
+            raise BuildError("%s no longer holds %s; update the list of files kept from it in build_embedded.py." % (wheel.name, ", ".join(missing)))
+        count = 0
+        for member in members:
+            if member in keep_only[name] or member.split("/")[0].endswith(".dist-info"):
+                continue
+            target = site_packages.joinpath(*member.split("/"))
+            if target.exists():
+                target.unlink()
+                count += 1
+        for folder in sorted((p for p in site_packages.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+            if not any(folder.iterdir()):
+                folder.rmdir()
+        pruned[name] = count
+    return pruned
+
+
+def pe_imports(path):
+    """Names of the DLLs a Windows program or module imports (its import table; delay-loaded ones are not listed)."""
+    data = Path(path).read_bytes()
+    if data[:2] != b"MZ" or len(data) < 0x40:
+        return []
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    if data[pe:pe + 4] != b"PE\0\0":
+        return []
+    sections_count = struct.unpack_from("<H", data, pe + 6)[0]
+    optional_size = struct.unpack_from("<H", data, pe + 20)[0]
+    optional = pe + 24
+    directories = optional + (112 if struct.unpack_from("<H", data, optional)[0] == 0x20B else 96)
+    rva = struct.unpack_from("<I", data, directories + 8)[0]          # directory entry 1: the import table
+    if not rva:
+        return []
+    sections = [struct.unpack_from("<IIII", data, optional + optional_size + 40 * i + 8) for i in range(sections_count)]
+
+    def offset(address):
+        for virtual_size, virtual_address, raw_size, raw_pointer in sections:
+            if virtual_address <= address < virtual_address + max(virtual_size, raw_size):
+                return address - virtual_address + raw_pointer
+        raise BuildError("%s has an import table that points outside its sections." % Path(path).name)
+
+    names, at = [], offset(rva)
+    while True:
+        name_rva = struct.unpack_from("<I", data, at + 12)[0]
+        if name_rva == 0:
+            return names
+        start = offset(name_rva)
+        names.append(data[start:data.index(b"\0", start)].decode("ascii", "replace"))
+        at += 20
+
+
+def native_files(folder):
+    return [p for p in Path(folder).rglob("*") if p.is_file() and p.suffix.lower() in (".pyd", ".dll")]
+
+
+def check_native_dependencies(interpreter, files_removed_names):
+    """BuildError if a native file left in the package imports a DLL that this build deleted. `files_removed_names` is the set
+    of lower-case names of the DLL and module files that were in the wheels and are no longer in the package. (Imports of
+    Python modules from inside a native module are invisible here; the Windows verify job imports them for real.)"""
+    problems = []
+    for path in native_files(interpreter):
+        for imported in pe_imports(path):
+            if imported.lower() in files_removed_names:
+                problems.append("%s needs %s, which was removed" % (path.name, imported))
+    if problems:
+        raise BuildError("Trimming the packages removed a file that one that stayed still needs: " + "; ".join(sorted(set(problems))))
 
 
 def unpack_wheels(wheels, site_packages):
@@ -410,7 +521,7 @@ def inventory_text(rows):
     return "\n".join(lines) + "\n"
 
 def legal_review_text(*, version, python_sha256, embedded_notices, unsigned_modules, vcruntime, python_org_notices=(),
-                      removed_programs=()):
+                      removed_programs=(), omitted_packages=(), pruned=None):
     lines = [
         "Items for Legal review - %s %s (%s, python.org embeddable Python)" % (PACKAGE, version, PLATFORM),
         "",
@@ -470,6 +581,11 @@ def legal_review_text(*, version, python_sha256, embedded_notices, unsigned_modu
         "   " + (", ".join(unsigned_modules) if unsigned_modules else "none") + ". They are not executables of ours and carry no",
         "   signature (NATIVE_FILES.txt lists them with their SHA-256). A site that enforces signed binaries (AppLocker, WDAC)",
         "   may object to them.",
+        "",
+        "   Packages that were downloaded (hash-checked against uv.lock) and left out because the server never imports them: " +
+        (", ".join(omitted_packages) or "none") + ". Files removed from the pywin32 wheel, which is needed only for four modules",
+        "   (pywintypes, win32api, win32con, win32job, imported by mcp on Windows): " + (", ".join("%s: %d" % i for i in (pruned or {}).items()) or "none") + ".",
+        "   Reasons are in OMITTED_PACKAGES and PYWIN32_KEEP in scripts/build_embedded.py. The 'unsigned' list above is therefore short.",
         "",
         "   Programs that wheels contain and this package removes (none is needed by the server): " + (", ".join(removed_programs) or "none") + ".",
         "   They would be unsigned executables. The files in the package therefore differ from those wheels in exactly these",
@@ -592,7 +708,18 @@ def build(stage, embed_zip, pgp_fingerprint=None):
         wheels.mkdir()
         own = build_own_wheel(wheels)
         download_wheels(wheels, own)
+        omitted_packages = omit_packages(wheels)
+        log("  left out (the server does not use them): " + ", ".join(omitted_packages))
+        check_closure(wheels, windows_marker_environment(), exempt=set(OMITTED_PACKAGES))
+        log("  every other package the wheels need on Windows is present")
+        site_packages = interpreter / "Lib" / "site-packages"
+        wheel_natives = {n.rsplit("/", 1)[-1].lower() for w in wheels.glob("*.whl") for n in zipfile.ZipFile(w).namelist()
+                         if n.lower().endswith((".pyd", ".dll"))}
         skipped_scripts = unpack_wheels(wheels, interpreter / "Lib" / "site-packages")
+        pruned = prune_wheel_files(wheels, site_packages)
+        if pruned:
+            log("  trimmed to the files the server needs: " + ", ".join("%s (%d files removed)" % item for item in pruned.items()))
+        check_native_dependencies(interpreter, wheel_natives - {p.name.lower() for p in native_files(interpreter)})
         if skipped_scripts:
             log("  not installed (scripts in .data folders): " + ", ".join(skipped_scripts))
         removed_programs = remove_programs(interpreter / "Lib" / "site-packages")
@@ -601,7 +728,8 @@ def build(stage, embed_zip, pgp_fingerprint=None):
         (stage / "requirements.txt").write_text(requirements_text(wheels), encoding="utf-8")
         index, missing = extract_licences(wheels, stage / "THIRD_PARTY_LICENSES", own.name.split("-")[0] + "-")
         wheel_count = len(list(wheels.glob("*.whl")))
-        site_names = sorted({n.split("/", 1)[0] for w in wheels.glob("*.whl") for n in zipfile.ZipFile(w).namelist()
+        site_names = sorted({n.split("/", 1)[0] for w in wheels.glob("*.whl")
+                             for n in (KEEP_ONLY.get(dist_name(w)) or zipfile.ZipFile(w).namelist())
                              if "/" in n and not n.split("/", 1)[0].endswith((".dist-info", ".data"))})
     write_pth(interpreter)
     inventory = native_inventory(stage)
@@ -640,7 +768,7 @@ def build(stage, embed_zip, pgp_fingerprint=None):
     licence_present = (REPO / "LICENSE").is_file()
     (stage / "LEGAL_REVIEW.txt").write_text(legal_review_text(
         version=version, python_sha256=EMBED_SHA256, embedded_notices=notices, unsigned_modules=unsigned, vcruntime=vcruntime,
-        python_org_notices=python_org, removed_programs=removed_programs),
+        python_org_notices=python_org, removed_programs=removed_programs, omitted_packages=omitted_packages, pruned=pruned),
         encoding="utf-8")
     if licence_present:
         shutil.copyfile(REPO / "LICENSE", stage / "LICENSE")
@@ -653,6 +781,7 @@ def build(stage, embed_zip, pgp_fingerprint=None):
         "wheel_count": wheel_count, "uv_lock_sha256": sha256_file(REPO / "uv.lock"),
         "license_sha256": sha256_file(REPO / "LICENSE") if licence_present else None,
         "unsigned_native_modules": unsigned, "removed_programs": removed_programs,
+        "omitted_packages": omitted_packages, "pruned_files": pruned,
     }
     (stage / "BUILDINFO").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     shutil.copy(REPO / "scripts" / "install.py", stage / "install.py")
