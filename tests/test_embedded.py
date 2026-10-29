@@ -113,6 +113,35 @@ def test_the_checked_in_key_is_the_pinned_one():
     assert re.fullmatch(r"[0-9A-F]{40}", FPR)
 
 
+@pytest.mark.parametrize("path, posix, expected", [
+    ("C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\tmpabc", True, "/c/Users/RUNNER~1/AppData/Local/Temp/tmpabc"),
+    ("D:\\a\\repo\\scripts\\keys\\k.asc", True, "/d/a/repo/scripts/keys/k.asc"),
+    ("C:/Users/x/file.zip", True, "/c/Users/x/file.zip"),
+    ("C:\\Users\\x", False, "C:\\Users\\x"),                    # a native Windows gpg wants the path as it is
+    ("/tmp/already/posix", True, "/tmp/already/posix"),
+    ("relative\\path", True, "relative\\path"),
+])
+def test_paths_are_given_to_an_msys_gpg_the_unix_way_and_to_other_gpgs_unchanged(path, posix, expected):
+    assert embedded.to_gpg_path(path, posix) == expected
+
+
+def test_the_kind_of_gpg_is_read_from_the_home_line_of_its_version_output():
+    msys = "gpg (GnuPG) 2.4.7\nlibgcrypt 1.11.0\nHome: /c/Users/runneradmin/.gnupg\nSupported algorithms:\n"
+    native = "gpg (GnuPG) 2.4.5\nHome: C:\\Users\\runneradmin\\AppData\\Roaming\\gnupg\nSupported algorithms:\n"
+    assert embedded.gpg_home_is_posix(msys) is True
+    assert embedded.gpg_home_is_posix(native) is False
+    assert embedded.gpg_home_is_posix("no home line here") is False
+
+
+@posix_only
+def test_gpg_is_asked_which_kind_it_is_without_the_callers_gnupghome(tmp_path, monkeypatch):
+    fake = tmp_path / "gpg"
+    fake.write_text('#!/bin/sh\nif [ -n "$GNUPGHOME" ]; then echo "Home: C:\\\\leaked"; else echo "Home: /c/Users/x/.gnupg"; fi\n')
+    fake.chmod(0o755)
+    monkeypatch.setenv("GNUPGHOME", "C:\\Users\\x")
+    assert embedded.gpg_wants_posix_paths(str(fake)) is True
+
+
 gpg_available = pytest.mark.skipif(not (__import__("shutil").which("gpg") or __import__("shutil").which("gpg2")), reason="gpg not installed")
 
 

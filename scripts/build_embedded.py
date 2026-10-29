@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -108,6 +109,30 @@ def check_gpg_status(status):
     return PGP_FINGERPRINT
 
 
+def gpg_wants_posix_paths(gpg):
+    """True for an MSYS build of gpg, such as the one in Git for Windows. It runs on Windows but reads paths the Unix way:
+    `C:\\Users\\x` is a relative name to it (it was joined to the current folder, so the throwaway keyring could not be
+    created) and `/c/Users/x` is the right one. `gpg --version` shows which kind it is: its "Home:" line begins with a
+    slash for an MSYS build and with a drive letter for a native Windows one (Gpg4win)."""
+    env = {k: v for k, v in os.environ.items() if k != "GNUPGHOME"}
+    out = subprocess.run([gpg, "--version"], env=dict(env, LC_ALL="C"), capture_output=True, text=True,
+                         stdin=subprocess.DEVNULL, timeout=60).stdout
+    return gpg_home_is_posix(out)
+
+
+def gpg_home_is_posix(version_text):
+    match = re.search(r"^Home:\s*(\S.*)$", version_text, re.M)
+    return bool(match and match.group(1).strip().startswith("/"))
+
+
+def to_gpg_path(path, posix):
+    """`path` as the gpg in use wants it: for an MSYS gpg, C:\\Users\\x becomes /c/Users/x; otherwise unchanged."""
+    text = str(path)
+    if posix and re.match(r"^[A-Za-z]:[\\/]", text):
+        return "/" + text[0].lower() + text[2:].replace("\\", "/")
+    return text
+
+
 def verify_pgp(zip_path, signature_path, key_path=None):
     """Check the OpenPGP signature of the zip against the checked-in key, in a throwaway keyring. Returns the fingerprint."""
     gpg = shutil.which("gpg") or shutil.which("gpg2")
@@ -117,11 +142,12 @@ def verify_pgp(zip_path, signature_path, key_path=None):
     key_path = Path(key_path or PGP_KEY)
     if not key_path.is_file():
         raise BuildError("The signing key %s is missing from the repository." % key_path)
+    posix = gpg_wants_posix_paths(gpg)
     with tempfile.TemporaryDirectory() as home:
         os.chmod(home, 0o700)
-        env = dict(os.environ, GNUPGHOME=home, LC_ALL="C")
+        env = dict(os.environ, GNUPGHOME=to_gpg_path(home, posix), LC_ALL="C")
         base = [gpg, "--batch", "--no-tty", "--no-autostart"]
-        imported = subprocess.run(base + ["--import", str(key_path)], env=env, capture_output=True, text=True,
+        imported = subprocess.run(base + ["--import", to_gpg_path(key_path, posix)], env=env, capture_output=True, text=True,
                                   stdin=subprocess.DEVNULL, timeout=120)
         if imported.returncode != 0:
             raise BuildError("gpg could not import %s:\n%s" % (key_path, imported.stderr))
@@ -130,7 +156,7 @@ def verify_pgp(zip_path, signature_path, key_path=None):
         primaries = [line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:")]
         if PGP_FINGERPRINT not in primaries:
             raise BuildError("%s does not contain the pinned key %s." % (key_path, PGP_FINGERPRINT))
-        result = subprocess.run(base + ["--status-fd", "1", "--verify", str(signature_path), str(zip_path)], env=env,
+        result = subprocess.run(base + ["--status-fd", "1", "--verify", to_gpg_path(signature_path, posix), to_gpg_path(zip_path, posix)], env=env,
                                 capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
         if result.returncode != 0 and "[GNUPG:] GOODSIG" not in result.stdout:
             raise BuildError("The OpenPGP signature of %s does not verify:\n%s" % (Path(zip_path).name, result.stderr.strip()))
