@@ -50,8 +50,8 @@ def make_embed_zip(path, signed=True, extra=(), with_dll=True):
         archive.writestr("python.exe", fake_pe(b"Python Software Foundation" if signed else b""))
         archive.writestr("pythonw.exe", fake_pe())
         if with_dll:
-            archive.writestr("python313.dll", fake_pe())
-        archive.writestr("python313._pth", "python313.zip\n.\n# import site\n")
+            archive.writestr("python312.dll", fake_pe())
+        archive.writestr("python312._pth", "python312.zip\n.\n# import site\n")
         archive.writestr("LICENSE.txt", "PSF licence")
         archive.writestr("vcruntime140.dll", fake_pe(b"Microsoft"))
         for name, data in extra:
@@ -280,9 +280,9 @@ def test_programs_from_wheels_are_removed_and_reported(tmp_path):
 
 
 def test_the_pth_file_lists_the_library_zip_the_folder_site_packages_and_enables_site(tmp_path):
-    (tmp_path / "python313._pth").write_text("python313.zip\n.\n# Uncomment to run site.main() automatically\n#import site\n")
+    (tmp_path / "python312._pth").write_text("python312.zip\n.\n# Uncomment to run site.main() automatically\n#import site\n")
     pth = embedded.write_pth(tmp_path)
-    assert pth.read_text().splitlines() == ["python313.zip", ".", "Lib\\site-packages", "import site"]
+    assert pth.read_text().splitlines() == ["python312.zip", ".", "Lib\\site-packages", "import site"]
 
 
 # --------------------------------------------------------------------- the checks
@@ -295,7 +295,7 @@ def make_wheel_with_requires(folder, name, requires):
 def test_windows_markers_are_those_of_the_target_not_of_the_build_machine():
     environment = embedded.windows_marker_environment()
     assert environment["sys_platform"] == "win32" and environment["platform_system"] == "Windows" and environment["os_name"] == "nt"
-    assert environment["python_version"] == "3.13" and environment["python_full_version"] == embedded.EMBED_VERSION
+    assert environment["python_version"] == "3.12" and environment["python_full_version"] == embedded.EMBED_VERSION
 
 
 def test_a_missing_windows_only_dependency_is_caught(tmp_path):
@@ -307,7 +307,7 @@ def test_a_missing_windows_only_dependency_is_caught(tmp_path):
     with pytest.raises(embedded.BuildError, match=r"pywin32 \(required by mcp\)") as caught:
         embedded.check_closure(wheels, embedded.windows_marker_environment())
     assert "uvloop" not in str(caught.value) and "extra-only" not in str(caught.value)   # not needed on Windows, or only for an extra
-    make_wheel_with_requires(wheels, "pywin32-312-cp313-cp313-win_amd64", [])
+    make_wheel_with_requires(wheels, "pywin32-312-cp312-cp312-win_amd64", [])
     embedded.check_closure(wheels, embedded.windows_marker_environment())               # now complete
 
 
@@ -327,11 +327,11 @@ def make_stage(tmp_path):
 
 def test_a_layout_that_does_not_enable_site_or_keeps_a_comment_fails(tmp_path):
     stage = make_stage(tmp_path)
-    pth = stage / "python" / "python313._pth"
-    pth.write_text("python313.zip\n.\nLib\\site-packages\n")
+    pth = stage / "python" / "python312._pth"
+    pth.write_text("python312.zip\n.\nLib\\site-packages\n")
     with pytest.raises(embedded.BuildError, match="does not look as expected"):
         embedded.verify_layout(stage, ["mcp"])
-    pth.write_text("python313.zip\n.\nLib\\site-packages\nimport site\n#import site\n")
+    pth.write_text("python312.zip\n.\nLib\\site-packages\nimport site\n#import site\n")
     with pytest.raises(embedded.BuildError, match="does not look as expected"):
         embedded.verify_layout(stage, ["mcp"])
 
@@ -357,7 +357,7 @@ def test_notices_are_copied_from_the_windows_set_and_listed_for_legal(tmp_path):
     python_org = embedded.collect_python_org_notices(tmp_path / "po")
     assert "license.rst" in python_org and "LIBRARIES.txt" in python_org
     assert "OpenSSL" in (tmp_path / "po" / "license.rst").read_text(encoding="utf-8")
-    assert "openssl-3.5.9" in (tmp_path / "po" / "LIBRARIES.txt").read_text()
+    assert "openssl-3." in (tmp_path / "po" / "LIBRARIES.txt").read_text()
     text = embedded.legal_review_text(version="0.1.0", python_sha256="abc", embedded_notices=names,
                                       unsigned_modules=["rpds.pyd"], vcruntime=["vcruntime140.dll"], python_org_notices=python_org,
                                       removed_programs=["win32/pythonservice.exe"])
@@ -395,7 +395,7 @@ def test_the_microsoft_notice_lists_the_restrictions_and_the_files():
 
 def test_the_pinned_download_is_a_python_org_https_url_for_the_same_version():
     assert embedded.EMBED_URL.startswith("https://www.python.org/ftp/python/%s/" % embedded.EMBED_VERSION)
-    assert len(embedded.EMBED_SHA256) == 64 and embedded.PYTHON_TAG == "cp313"
+    assert len(embedded.EMBED_SHA256) == 64 and embedded.PYTHON_TAG == "cp312"
 
 
 # ------------------------------------------------------------------------ installer
@@ -406,7 +406,7 @@ def embedded_source(folder, script="#!/bin/sh\necho diamond-mcp usage\n"):
     exe = source / "python.exe"
     exe.write_text(script)
     exe.chmod(0o755)
-    (source / "python313._pth").write_text("x")
+    (source / "python312._pth").write_text("x")
     return source
 
 
@@ -414,9 +414,9 @@ def embedded_source(folder, script="#!/bin/sh\necho diamond-mcp usage\n"):
 def test_embedded_install_copies_checks_and_marks_the_folder(tmp_path):
     embedded_source(tmp_path / "zip")
     args = install.parse_args(["--install-dir", str(tmp_path / "target")])
-    python = install.install_embedded_bundle(args, {"version": "0.1.0", "python": "3.13.17"}, str(tmp_path / "zip"))
+    python = install.install_embedded_bundle(args, {"version": "0.1.0", "python": "3.12.10"}, str(tmp_path / "zip"))
     assert python == str(tmp_path / "target" / "python.exe")
-    assert (tmp_path / "target" / install.MARKER).exists() and (tmp_path / "target" / "python313._pth").exists()
+    assert (tmp_path / "target" / install.MARKER).exists() and (tmp_path / "target" / "python312._pth").exists()
 
 
 @posix_only
@@ -465,7 +465,7 @@ def test_the_embedded_default_folder_sits_beside_the_environment_folder():
 
 def test_install_selects_an_embedded_build_without_asking_for_a_python(tmp_path, monkeypatch):
     (tmp_path / "windows-x86_64").mkdir()
-    (tmp_path / "windows-x86_64" / "BUILDINFO").write_text(json.dumps({"kind": "embedded", "platform": "windows-x86_64", "python": "3.13.17"}))
+    (tmp_path / "windows-x86_64" / "BUILDINFO").write_text(json.dumps({"kind": "embedded", "platform": "windows-x86_64", "python": "3.12.10"}))
     monkeypatch.setattr(install, "HERE", str(tmp_path))
     monkeypatch.setattr(install, "IS_WINDOWS", True)
     folder, info = install.select_bundle()
@@ -477,7 +477,7 @@ def test_install_selects_an_embedded_build_without_asking_for_a_python(tmp_path,
 def make_zip(folder, platform, kind, version="0.1.0", git="abc"):
     info = {"name": "lattice-diamond-mcp", "version": version, "kind": kind, "platform": platform, "git": git}
     if kind == "embedded":
-        info.update(python="3.13.17", python_tag="cp313")
+        info.update(python="3.12.10", python_tag="cp312")
     path = folder / ("lattice-diamond-mcp-%s-%s.zip" % (kind, platform))
     root = "lattice-diamond-mcp-" + version
     with zipfile.ZipFile(path, "w") as archive:
@@ -557,8 +557,8 @@ def pe_with_imports(names):
 
 def test_the_import_table_of_a_windows_module_is_read(tmp_path):
     path = tmp_path / "m.pyd"
-    path.write_bytes(pe_with_imports(["python313.dll", "pywintypes313.dll", "KERNEL32.dll"]))
-    assert embedded.pe_imports(path) == ["python313.dll", "pywintypes313.dll", "KERNEL32.dll"]
+    path.write_bytes(pe_with_imports(["python312.dll", "pywintypes312.dll", "KERNEL32.dll"]))
+    assert embedded.pe_imports(path) == ["python312.dll", "pywintypes312.dll", "KERNEL32.dll"]
     other = tmp_path / "t.txt"
     other.write_text("not a program")
     assert embedded.pe_imports(other) == []
@@ -566,17 +566,17 @@ def test_the_import_table_of_a_windows_module_is_read(tmp_path):
 
 def test_a_kept_file_that_needs_a_removed_dll_fails_the_build(tmp_path):
     (tmp_path / "win32").mkdir()
-    (tmp_path / "win32" / "win32api.pyd").write_bytes(pe_with_imports(["python313.dll", "pywintypes313.dll", "kernel32.dll"]))
-    with pytest.raises(embedded.BuildError, match="win32api.pyd needs pywintypes313.dll, which was removed"):
-        embedded.check_native_dependencies(tmp_path, {"pywintypes313.dll", "pythoncom313.dll"})
-    embedded.check_native_dependencies(tmp_path, {"pythoncom313.dll"})               # it only needs what stayed
+    (tmp_path / "win32" / "win32api.pyd").write_bytes(pe_with_imports(["python312.dll", "pywintypes312.dll", "kernel32.dll"]))
+    with pytest.raises(embedded.BuildError, match="win32api.pyd needs pywintypes312.dll, which was removed"):
+        embedded.check_native_dependencies(tmp_path, {"pywintypes312.dll", "pythoncom312.dll"})
+    embedded.check_native_dependencies(tmp_path, {"pythoncom312.dll"})               # it only needs what stayed
     embedded.check_native_dependencies(tmp_path, set())
 
 
 def make_pywin32_like_wheel(folder):
     members = {name: "x" for name in ("win32/win32api.pyd", "win32/win32ui.pyd", "pywin32.pth", "pythonwin/Pythonwin.exe",
                                       "win32com/client/__init__.py", "pywin32-312.dist-info/METADATA", "pywin32-312.dist-info/licenses/LICENSE")}
-    return make_wheel(folder, "pywin32-312-cp313-cp313-win_amd64.whl", members)
+    return make_wheel(folder, "pywin32-312-cp312-cp312-win_amd64.whl", members)
 
 
 def test_a_wheel_is_trimmed_to_the_listed_files_and_keeps_its_dist_info(tmp_path):
@@ -615,7 +615,7 @@ def test_unused_packages_are_dropped_with_their_reasons_and_not_reported_as_miss
 
 def test_the_pywin32_files_that_are_kept_are_the_four_modules_mcp_imports_and_what_they_load():
     names = {Path(p).name for p in embedded.PYWIN32_KEEP}
-    assert {"win32api.pyd", "win32job.pyd", "win32con.py", "pywintypes.py", "pywintypes313.dll", "_win32sysloader.pyd",
+    assert {"win32api.pyd", "win32job.pyd", "win32con.py", "pywintypes.py", "pywintypes312.dll", "_win32sysloader.pyd",
             "pywin32.pth", "pywin32_bootstrap.py"} == names
     assert embedded.KEEP_ONLY == {"pywin32": embedded.PYWIN32_KEEP}
 

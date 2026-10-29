@@ -133,23 +133,23 @@ FILES = [{"path": "diamond-mcp", "sha256": "a" * 64, "size": 10}, {"path": "_int
 
 
 def test_augment_adds_interpreter_native_files_and_build_tool():
-    sbom = build.augment_sbom(uv_style_sbom(), python_version="3.11.17", pyinstaller_version="6.22.3", files=FILES,
+    sbom = build.augment_sbom(uv_style_sbom(), python_version="3.12.10", pyinstaller_version="6.22.3", files=FILES,
                               properties={"platform": "linux-x86_64"})
     assert {"name": "pyinstaller", "version": "6.22.3"} in sbom["metadata"]["tools"]
     assert {"name": "diamond-mcp:platform", "value": "linux-x86_64"} in sbom["metadata"]["properties"]
     python = next(c for c in sbom["components"] if c["name"] == "cpython")
-    assert python["version"] == "3.11.17" and python["purl"] == "pkg:generic/cpython@3.11.17"
+    assert python["version"] == "3.12.10" and python["purl"] == "pkg:generic/cpython@3.12.10"
     files = [c for c in sbom["components"] if c["type"] == "file"]
     assert [(c["name"], c["hashes"][0]["alg"], c["hashes"][0]["content"]) for c in files] == [
         ("diamond-mcp", "SHA-256", "a" * 64), ("_internal/libpython3.11.so.1.0", "SHA-256", "b" * 64)]
     root = next(d for d in sbom["dependencies"] if d["ref"] == "proj-1@0.1.0")
-    assert "cpython@3.11.17" in root["dependsOn"] and "file:diamond-mcp" in root["dependsOn"]
+    assert "cpython@3.12.10" in root["dependsOn"] and "file:diamond-mcp" in root["dependsOn"]
     assert build.validate_sbom(sbom) == 3 + 1 + 2
 
 
 def test_augment_does_not_modify_its_input():
     original = uv_style_sbom()
-    build.augment_sbom(original, python_version="3.11.17", pyinstaller_version="6.22.3", files=FILES, properties={})
+    build.augment_sbom(original, python_version="3.12.10", pyinstaller_version="6.22.3", files=FILES, properties={})
     assert original == uv_style_sbom()
 
 
@@ -175,7 +175,7 @@ def test_validate_rejects_duplicates_and_dangling_references():
 
 
 def test_runtime_package_names_excludes_the_project_and_the_interpreter():
-    sbom = build.augment_sbom(uv_style_sbom(), python_version="3.11.17", pyinstaller_version="6", files=[], properties={})
+    sbom = build.augment_sbom(uv_style_sbom(), python_version="3.12.10", pyinstaller_version="6", files=[], properties={})
     assert build.runtime_package_names(sbom) == {"mcp", "cryptography", "cffi"}
 
 
@@ -224,8 +224,9 @@ def test_check_sbom_matches_bundle_reports_absent_and_rejects_unlisted():
 def test_collect_licences_copies_only_bundled_packages_plus_pyinstaller(tmp_path):
     site = make_site_packages(tmp_path, [("anyio", "4", []), ("cryptography", "46", []), ("pyinstaller", "6", [])])
     python_root = tmp_path / "py"
-    (python_root / "lib" / "python3.11").mkdir(parents=True)
-    (python_root / "lib" / "python3.11" / "LICENSE.txt").write_text("PSF")
+    stdlib = python_root / "lib" / ("python" + build.PYTHON_VERSION.rsplit(".", 1)[0])
+    stdlib.mkdir(parents=True)
+    (stdlib / "LICENSE.txt").write_text("PSF")
     out = tmp_path / "out"
     index, missing = build.collect_licences(site, {"anyio"}, python_root, out)
     assert (out / "anyio-4" / "licenses" / "LICENSE").read_text() == "licence of anyio"
@@ -243,7 +244,7 @@ def test_collect_licences_flags_a_package_without_one(tmp_path):
     assert "odd 1" in missing and ("cpython " + build.PYTHON_VERSION) in missing
 
 
-def make_notices(tmp_path, release="20261021", platform="linux-x86_64"):
+def make_notices(tmp_path, release="20250529", platform="linux-x86_64"):
     notices = tmp_path / "notices"
     (notices / platform).mkdir(parents=True, exist_ok=True)
     (notices / platform / "LICENSE.openssl-3.txt").write_text("Apache")
@@ -255,7 +256,7 @@ def make_notices(tmp_path, release="20261021", platform="linux-x86_64"):
 def test_embedded_notices_are_copied_next_to_the_cpython_licence(tmp_path):
     python_root = tmp_path / "py"
     python_root.mkdir()
-    (python_root / "BUILD").write_text("20261021")
+    (python_root / "BUILD").write_text("20250529")
     index, problems = build.collect_embedded_notices("linux-x86_64", python_root, tmp_path / "out", make_notices(tmp_path))
     target = tmp_path / "out" / ("cpython-" + build.PYTHON_VERSION) / "embedded-libraries"
     assert (target / "LICENSE.openssl-3.txt").read_text() == "Apache" and (target / "LICENSE.zlib.txt").exists()
@@ -266,7 +267,7 @@ def test_embedded_notices_refuse_an_interpreter_from_another_release(tmp_path):
     python_root = tmp_path / "py"
     python_root.mkdir()
     (python_root / "BUILD").write_text("20270101")
-    with pytest.raises(build.BuildError, match="20270101.*20261021"):
+    with pytest.raises(build.BuildError, match="20270101.*20250529"):
         build.collect_embedded_notices("linux-x86_64", python_root, tmp_path / "out", make_notices(tmp_path))
 
 
@@ -282,7 +283,7 @@ def test_embedded_notices_report_what_cannot_be_confirmed_or_is_missing(tmp_path
 def test_the_checked_in_notices_cover_every_library_the_manifest_names():
     for platform in ("linux-x86_64", "windows-x86_64"):
         have = {p.name for p in (build.NOTICES_DIR / platform).glob("LICENSE.*.txt")}
-        assert have and all(p.stat().st_size > 200 for p in (build.NOTICES_DIR / platform).glob("LICENSE.*.txt"))
+        assert have and all(p.stat().st_size > 20 for p in (build.NOTICES_DIR / platform).glob("LICENSE.*.txt"))   # liblzma's is one line: public domain
         assert "LICENSE.openssl-3.txt" in have and "LICENSE.zlib.txt" in have and "LICENSE.expat.txt" in have
     assert (build.NOTICES_DIR / "RELEASE").read_text().strip().isdigit()
     sources = (build.NOTICES_DIR / "SOURCES.txt").read_text()

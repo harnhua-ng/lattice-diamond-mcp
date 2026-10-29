@@ -13,8 +13,8 @@ unpacked beside it; the server is `python\\python.exe -I -m diamond_mcp`.
 
     lattice-diamond-mcp-<version>/
         install.py  BUILDINFO  LICENSE  LEGAL_REVIEW.txt  THIRD_PARTY_LICENSES.txt  THIRD_PARTY_LICENSES/
-        python/     python.exe, python313.dll, the standard-library zip and extension modules (as published),
-                    python313._pth, Lib/site-packages/ (the packages from uv.lock and this project)
+        python/     python.exe, python312.dll, the standard-library zip and extension modules (as published),
+                    python312._pth, Lib/site-packages/ (the packages from uv.lock and this project)
 
 What is checked: the embeddable zip against the SHA-256 pinned below and against its OpenPGP signature (the .asc
 python.org publishes beside it, made with the Windows release signer's key, which is checked in; needs gpg);
@@ -54,8 +54,8 @@ from build_installer import (BuildError, check_wheels_against_lock, extract_lice
 
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE = "lattice-diamond-mcp"
-EMBED_VERSION = "3.13.17"
-EMBED_SHA256 = "9e35319bffedab8b36ad44d8f377cb4f1733bcec257a0b6d04d94f01486ddb38"          # python-3.13.17-embed-amd64.zip, as downloaded over https from python.org
+EMBED_VERSION = "3.12.10"
+EMBED_SHA256 = "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3"          # python-3.12.10-embed-amd64.zip, as downloaded over https from python.org
 EMBED_URL = "https://www.python.org/ftp/python/%s/python-%s-embed-amd64.zip" % (EMBED_VERSION, EMBED_VERSION)
 PYTHON_TAG = "cp%s" % "".join(EMBED_VERSION.split(".")[:2])
 PLATFORM = "windows-x86_64"
@@ -83,7 +83,7 @@ OMITTED_PACKAGES = {
 # pywin32 is needed on Windows because mcp.os.win32.utilities imports pywintypes, win32api, win32con and win32job at import
 # time, but a wheel with hundreds of files and ~55 unsigned native ones is far more than that. Only these files are kept
 # (paths in the wheel). Static import tables show win32api.pyd and win32job.pyd depend on no other pywin32 file than
-# pywintypes313.dll; pywintypes.py loads _win32sysloader to find that DLL; win32con is plain constants.
+# pywintypes312.dll; pywintypes.py loads _win32sysloader to find that DLL; win32con is plain constants.
 PYWIN32_KEEP = ("pywin32.pth", "win32/win32api.pyd", "win32/win32job.pyd", "win32/_win32sysloader.pyd",
                 "win32/lib/pywintypes.py", "win32/lib/win32con.py", "win32/lib/pywin32_bootstrap.py",
                 "pywin32_system32/pywintypes%s.dll" % PYTHON_TAG[2:])

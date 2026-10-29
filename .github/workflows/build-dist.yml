@@ -16,7 +16,7 @@ name: Build dist
 #               Contains no PyInstaller code. Readable source.
 #
 #   EMBEDDED    lattice-diamond-mcp-<version>-embedded-windows-x86_64.zip   (Windows only)
-#               python.org's own embeddable Python 3.13, signed by the Python Software Foundation, with the
+#               python.org's own embeddable Python 3.12.10, signed by the Python Software Foundation, with the
 #               locked packages unpacked beside it. NO executable of ours, so nothing for Windows Defender or
 #               SmartScreen to distrust and nothing to sign; the server is `python.exe -I -m diamond_mcp`.
 #               Needs no Python on the machine. Combined with the Linux standalone program as the HYBRID

@@ -39,7 +39,7 @@ def fake_zip(folder, kind, platform, version="0.1.0", git="abc1234"):
     """A stand-in for a per-OS zip written by build_embedded.py (embedded) or build_binary.py (binary)."""
     info = {"name": "lattice-diamond-mcp", "version": version, "kind": kind, "platform": platform, "git": git}
     if kind == "embedded":
-        info.update(python="3.13.17", python_tag="cp313", python_source="https://www.python.org/x.zip",
+        info.update(python="3.12.10", python_tag="cp312", python_source="https://www.python.org/x.zip",
                     python_sha256="c" * 64, python_pgp_fingerprint="D" * 40, python_pgp_verified=True)
         name = "lattice-diamond-mcp-%s-embedded-%s.zip" % (version, platform)
     else:

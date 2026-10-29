@@ -1,4 +1,0 @@
-license.rst   copied unchanged from https://raw.githubusercontent.com/python/cpython/v3.13.17/Doc/license.rst
-  SHA-256 952ac05720d7f1dcb63589b35eb0931b1442eb250230a4ad31198eddf0ad6abc
-LIBRARIES.txt extracted from https://raw.githubusercontent.com/python/cpython/v3.13.17/PCbuild/python.props
-  SHA-256 of that file 022e29594aa3a2cc5ebc325529eb7c520bbb1a0c3706bba504217833334a9c7b

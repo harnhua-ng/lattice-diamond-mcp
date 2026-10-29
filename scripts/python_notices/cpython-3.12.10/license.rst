@@ -104,7 +104,7 @@ PYTHON SOFTWARE FOUNDATION LICENSE VERSION 2
       analyze, test, perform and/or display publicly, prepare derivative works,
       distribute, and otherwise use Python alone or in any derivative
       version, provided, however, that PSF's License Agreement and PSF's notice of
-      copyright, i.e., "Copyright © 2001-2024 Python Software Foundation; All Rights
+      copyright, i.e., "Copyright © 2001-2023 Python Software Foundation; All Rights
       Reserved" are retained in Python alone or in any derivative version
       prepared by Licensee.
 
@@ -479,7 +479,7 @@ The :mod:`trace` module contains the following notice::
 UUencode and UUdecode functions
 -------------------------------
 
-The ``uu`` codec contains the following notice::
+The :mod:`uu` module contains the following notice::
 
    Copyright 1994 by Lance Ellinghouse
    Cathedral City, California Republic, United States of America.
@@ -658,7 +658,7 @@ copyright and licensing notice::
 OpenSSL
 -------
 
-The modules :mod:`hashlib`, :mod:`posix` and :mod:`ssl` use
+The modules :mod:`hashlib`, :mod:`posix`, :mod:`ssl`, :mod:`crypt` use
 the OpenSSL library for added performance if made available by the
 operating system. Additionally, the Windows and macOS installers for
 Python may include a copy of the OpenSSL libraries, so we include a copy
@@ -1045,32 +1045,35 @@ https://www.w3.org/TR/xml-c14n2-testcases/ and is distributed under the
    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-.. _mimalloc-license:
+Audioop
+-------
 
-mimalloc
---------
+The audioop module uses the code base in g771.c file of the SoX project.
+https://sourceforge.net/projects/sox/files/sox/12.17.7/sox-12.17.7.tar.gz
 
-MIT License::
+   This source code is a product of Sun Microsystems, Inc. and is provided
+   for unrestricted use.  Users may copy or modify this source code without
+   charge.
 
-   Copyright (c) 2018-2021 Microsoft Corporation, Daan Leijen
+   SUN SOURCE CODE IS PROVIDED AS IS WITH NO WARRANTIES OF ANY KIND INCLUDING
+   THE WARRANTIES OF DESIGN, MERCHANTIBILITY AND FITNESS FOR A PARTICULAR
+   PURPOSE, OR ARISING FROM A COURSE OF DEALING, USAGE OR TRADE PRACTICE.
 
-   Permission is hereby granted, free of charge, to any person obtaining a copy
-   of this software and associated documentation files (the "Software"), to deal
-   in the Software without restriction, including without limitation the rights
-   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-   copies of the Software, and to permit persons to whom the Software is
-   furnished to do so, subject to the following conditions:
+   Sun source code is provided with no support and without any obligation on
+   the part of Sun Microsystems, Inc. to assist in its use, correction,
+   modification or enhancement.
 
-   The above copyright notice and this permission notice shall be included in all
-   copies or substantial portions of the Software.
+   SUN MICROSYSTEMS, INC. SHALL HAVE NO LIABILITY WITH RESPECT TO THE
+   INFRINGEMENT OF COPYRIGHTS, TRADE SECRETS OR ANY PATENTS BY THIS SOFTWARE
+   OR ANY PART THEREOF.
 
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-   SOFTWARE.
+   In no event will Sun Microsystems, Inc. be liable for any lost revenue
+   or profits or other special, indirect and consequential damages, even if
+   Sun has been advised of the possibility of such damages.
+
+   Sun Microsystems, Inc.
+   2550 Garcia Avenue
+   Mountain View, California  94043
 
 
 asyncio
@@ -1100,84 +1103,3 @@ which is distributed under the MIT license::
   LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
   OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
   WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-
-Global Unbounded Sequences (GUS)
---------------------------------
-
-The file :file:`Python/qsbr.c` is adapted from FreeBSD's "Global Unbounded
-Sequences" safe memory reclamation scheme in
-`subr_smr.c <https://github.com/freebsd/freebsd-src/blob/main/sys/kern/subr_smr.c>`_.
-The file is distributed under the 2-Clause BSD License::
-
-  Copyright (c) 2019,2020 Jeffrey Roberson <jeff@FreeBSD.org>
-
-  Redistribution and use in source and binary forms, with or without
-  modification, are permitted provided that the following conditions
-  are met:
-  1. Redistributions of source code must retain the above copyright
-     notice unmodified, this list of conditions, and the following
-     disclaimer.
-  2. Redistributions in binary form must reproduce the above copyright
-     notice, this list of conditions and the following disclaimer in the
-     documentation and/or other materials provided with the distribution.
-
-  THIS SOFTWARE IS PROVIDED BY THE AUTHOR "AS IS" AND ANY EXPRESS OR
-  IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
-  OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
-  IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
-  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
-  NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
-  THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-
-Unicode Character Database
---------------------------
-
-An extract of the `Unicode Character Database <https://www.unicode.org/ucd/>`__,
-converted to an internal format, is used by the :mod:`unicodedata` module and
-for the Unicode support of the :class:`str` type. The original Unicode data
-files are distributed under the `Unicode License <https://www.unicode.org/license.txt>`__::
-
-  UNICODE LICENSE V3
-
-  COPYRIGHT AND PERMISSION NOTICE
-
-  Copyright © 1991-2026 Unicode, Inc.
-
-  NOTICE TO USER: Carefully read the following legal agreement. BY
-  DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
-  SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
-  TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
-  DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
-
-  Permission is hereby granted, free of charge, to any person obtaining a
-  copy of data files and any associated documentation (the "Data Files") or
-  software and any associated documentation (the "Software") to deal in the
-  Data Files or Software without restriction, including without limitation
-  the rights to use, copy, modify, merge, publish, distribute, and/or sell
-  copies of the Data Files or Software, and to permit persons to whom the
-  Data Files or Software are furnished to do so, provided that either (a)
-  this copyright and permission notice appear with all copies of the Data
-  Files or Software, or (b) this copyright and permission notice appear in
-  associated Documentation.
-
-  THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
-  KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
-  THIRD PARTY RIGHTS.
-
-  IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
-  BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
-  OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
-  WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
-  ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
-  FILES OR SOFTWARE.
-
-  Except as contained in this notice, the name of a copyright holder shall
-  not be used in advertising or otherwise to promote the sale, use or other
-  dealings in these Data Files or Software without prior written
-  authorization of the copyright holder.

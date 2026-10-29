@@ -1,14 +1,14 @@
-Licence notices of the libraries inside the embedded CPython 3.11.17.
+Licence notices of the libraries inside the embedded CPython 3.12.10.
 Written by scripts/fetch_python_notices.py; every file below is copied unchanged from the
-python-build-standalone release 20261021 (https://github.com/astral-sh/python-build-standalone).
+python-build-standalone release 20250529 (https://github.com/astral-sh/python-build-standalone).
 
-linux-x86_64: cpython-3.11.17+20261021-x86_64-unknown-linux-gnu-pgo+lto-full.tar.zst
-  archive SHA-256 ed99202367e00d13f688dd526e69e5e90fb04d94c323569b3c907e59ca8412e1
+linux-x86_64: cpython-3.12.10+20250529-x86_64-unknown-linux-gnu-pgo+lto-full.tar.zst
+  archive SHA-256 9ea191b9620e1e3d6f81ec0373d4d5006d4d1c482247a4824f7f69f2212016a8
   LICENSE.bzip2.txt            SHA-256 1f38bbc7caacafd65169276d759c0d88c991b753b643ce35d0e45ea1971dd441
   LICENSE.expat.txt            SHA-256 122f2c27000472a201d337b9b31f7eb2b52d091b02857061a8880371612d9534
   LICENSE.libedit.txt          SHA-256 29cea33c32bbc9785142386377915612a2fa786482c46843383384aded2e09b1
   LICENSE.libffi.txt           SHA-256 deaf3a42effb551a5b140fa9afefed183a27f1341c6d1bf430d106a5e6931fc0
-  LICENSE.liblzma.txt          SHA-256 9a4062de0a2c388a98cf35a35d348b62fa97c838a71c3c28ee1a2d7d0a565b02
+  LICENSE.liblzma.txt          SHA-256 828d5b508798d6a95c1c08ce5eee517a84ed1bda14eac58c440b6bce2c5cf1ca
   LICENSE.libuuid.txt          SHA-256 122ee1f7e258f2c3c0e538a75c037684f420454bf3850ddc74ce750bbf5fe86b
   LICENSE.mpdecimal.txt        SHA-256 669512af7219f58be03a398766d7c9da11a3b3df9d3f05cb74c5ceca25c8da3b
   LICENSE.ncurses.txt          SHA-256 87a4c4442337b8968ef956031c406b74f9cb7149b7ba87311bdaba534816201c
@@ -16,12 +16,12 @@ linux-x86_64: cpython-3.11.17+20261021-x86_64-unknown-linux-gnu-pgo+lto-full.tar
   LICENSE.sqlite.txt           SHA-256 38bef3d28b24f145ea293bd3b6eb4b20396982abc8303128fb493986ea5bc719
   LICENSE.zlib.txt             SHA-256 818922b2620f12801a12bf78e399644a30990e66824abd8ca8ec24d451d6f92c
 
-windows-x86_64: cpython-3.11.17+20261021-x86_64-pc-windows-msvc-pgo-full.tar.zst
-  archive SHA-256 9bfe17e855b7a38e717f2986ad1e6095734ae048ded4c81a10e448e62293bbab
+windows-x86_64: cpython-3.12.10+20250529-x86_64-pc-windows-msvc-pgo-full.tar.zst
+  archive SHA-256 270c705750c605eb37c2f235e6bfca11f89beac3194d0f6822824712389d99c1
   LICENSE.bzip2.txt            SHA-256 bd5628cc76fb0ebf9c657d1dd4d1a240a1a7b216c31663e7bbf1131c0b70a910
   LICENSE.expat.txt            SHA-256 8a9cfe4b5924f4b25881aa0c9f5e4561c5f31065d0c4a13cdcdbcf917edf39aa
   LICENSE.libffi.txt           SHA-256 9afb8970cd29fc1031fa647278e4bef613399e2e3468a1e3a397f4d158c6101c
-  LICENSE.liblzma.txt          SHA-256 d87d218dd908b3243ec4cbc72af400e5b7437513ea9d9229291d0812b8464fec
+  LICENSE.liblzma.txt          SHA-256 fae12a09b592efa2894bcfd5bde0b90732ecde80ba38afc1801562b9dff6263c
   LICENSE.mpdecimal.txt        SHA-256 f094277cd46e1f6e4d87916cc4b51e22f613d45eb81f48231c3cb7caf8fc8a6a
   LICENSE.openssl-3.txt        SHA-256 ed72ce2b51ee58f117e5a021e2e04af158857f40269fbc03491f0b2a99dbcc96
   LICENSE.sqlite.txt           SHA-256 d8eb9aba7ef6b5ed06cb3ec19a7242316af2e5933c638eb67fb781c13884e01d

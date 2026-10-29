@@ -469,7 +469,7 @@ have never run (see "Things to know").
 
 The standalone zip's `diamond-mcp.exe` is an unsigned PyInstaller launcher, which Windows Defender and
 SmartScreen distrust and which strict sites (AppLocker, WDAC) may block. `scripts/build_embedded.py` builds a
-Windows package without one: python.org's **embeddable Python** (3.13.17), which the Python Software Foundation
+Windows package without one: python.org's **embeddable Python** (3.12.10), which the Python Software Foundation
 has signed, with the packages from `uv.lock` unpacked into its `Lib\site-packages`. The server is
 `python\python.exe -I -m diamond_mcp`; no Python needs to be installed and pip is not included.
 
@@ -488,7 +488,7 @@ in `uv.lock`; no wheel with scripts; and that the only program in the package is
 removed). The `._pth` file is rewritten to the library zip, the folder and `Lib\site-packages`.
 
 The package carries `LEGAL_REVIEW.txt` (the interpreter is unmodified; the notices for the libraries python.org
-builds in are python.org's own list for the release (`Doc/license.rst` and the library versions of its Windows build, copied from the CPython tag into `scripts/python_notices/cpython-3.13.17/`) plus the python-build-standalone texts from `scripts/python_notices/windows-x86_64/`;
+builds in are python.org's own list for the release (`Doc/license.rst` and the library versions of its Windows build, copied from the CPython tag into `scripts/python_notices/cpython-3.12.10/`) plus the python-build-standalone texts from `scripts/python_notices/windows-x86_64/`;
 python.org's Windows binaries contain Microsoft Distributable Code (`vcruntime140*.dll`), whose terms are in the
 `LICENSE.txt` of python.org's zip ("Additional Conditions for this Windows binary build") and require that end users agree
 to terms protecting it, so the package ships `THIRD_PARTY_LICENSES/microsoft-distributable-code.txt` (reached through
@@ -511,7 +511,7 @@ folder, and `install.py` starts Python with `-I`); the scripts in a wheel's `.da
 programs it ships, `Pythonwin.exe` and `pythonservice.exe`, are deleted (recorded in `BUILDINFO` as `removed_programs` and in
 `LEGAL_REVIEW.txt`). **Keeping the unsigned native files few.** A first version of this package had 59 unsigned third-party native files, 55 of
 them pywin32's. The build now ships only what the server uses, which leaves six: `_pydantic_core.pyd` and `rpds.pyd`
-(needed), and from pywin32 `win32api.pyd`, `win32job.pyd`, `_win32sysloader.pyd` and `pywintypes313.dll`
+(needed), and from pywin32 `win32api.pyd`, `win32job.pyd`, `_win32sysloader.pyd` and `pywintypes312.dll`
 (`mcp.os.win32.utilities` imports `pywintypes`, `win32api`, `win32con` and `win32job`; nothing else of pywin32 is used).
 Two lists in `scripts/build_embedded.py` hold the choices and the reasons: `PYWIN32_KEEP` (the eight files kept from the
 pywin32 wheel, including the pure-Python `pywintypes.py`, `win32con.py` and the bootstrap) and `OMITTED_PACKAGES` (pyjwt,
@@ -523,10 +523,15 @@ server for real. What a native module imports by name from Python code is invisi
 the one that proves the choice. Everything removed is recorded in `BUILDINFO` and `LEGAL_REVIEW.txt`. The package shrank from
 27 MB to 16 MB. `NATIVE_FILES.txt` lists every native file with its signer.
 
-**Which Python.** python.org builds an embeddable zip only for releases that have binaries, and stopped for 3.11 and
-3.12 at 3.11.9 and 3.12.10 (all later patch releases are source only). Shipping those would mean shipping an
-interpreter without the later security fixes, so the build uses 3.13.17. When python.org publishes a newer 3.13 or
-3.14 embeddable, change `EMBED_VERSION` and `EMBED_SHA256` together and check the signature note above.
+**Which Python: 3.12.10, on both operating systems, as a starting point.** python.org builds an embeddable zip only for
+releases that have binaries, and for 3.12 the last is 3.12.10 (3.12.11 to 3.12.16 are source-only security releases).
+Windows therefore ships 3.12.10 (OpenPGP-verified, signed by the Python Software Foundation) and the Linux program is
+built on the same 3.12.10 (python-build-standalone release 20250529, which uv 0.13.5 selects for that version). The cost:
+the interpreter lacks the fixes of those six releases, and the Windows ones cannot be had as python.org binaries. 3.13.17
+is current on both systems and has locked wheels, but python.org already publishes 3.13.18 as source only, so the same
+limit is near for 3.13; 3.14 still has a Windows zip (3.14.10) and locked wheels but has not been validated here. To move,
+change `EMBED_VERSION` and `EMBED_SHA256` together, re-run `scripts/fetch_python_notices.py` (both modes) for the new
+version, and check the signature note above.
 
 **The hybrid package.** `combine_installers.py --kind standalone` accepts this zip for Windows together with the
 Linux standalone zip and writes `lattice-diamond-mcp-<version>-hybrid-windows-linux-x86_64.zip`. install.py picks

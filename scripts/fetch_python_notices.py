@@ -4,7 +4,7 @@
 """
 Refresh scripts/python_notices/: the licence notices of the libraries inside the embedded CPython.
 
-    python scripts/fetch_python_notices.py [--release 20261021]
+    python scripts/fetch_python_notices.py [--release 20250529]
 
 The standalone program embeds a CPython from python-build-standalone (the build that uv fetches). That
 interpreter has OpenSSL, zlib, expat and other libraries compiled in, and their licences ask for a notice to
@@ -32,8 +32,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "scripts" / "python_notices"
-PYTHON_VERSION = "3.11.17"
-DEFAULT_RELEASE = "20261021"
+PYTHON_VERSION = "3.12.10"
+DEFAULT_RELEASE = "20250529"
 BASE = "https://github.com/astral-sh/python-build-standalone/releases/download/%s/"
 
 # Per platform: the archive flavour and the notices of the libraries that end up in the program, with the evidence.

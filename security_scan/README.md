@@ -111,14 +111,14 @@ Numbering is local to this scan. The last column names the corresponding cortex-
 - **No SBOM for the wheels zip and no provenance attestation** for either zip (the standalone zip has an SBOM).
 - **Licence notices for libraries inside the embedded Python (standalone zip): fixed 2026-10-29.** The CPython from
   python-build-standalone has OpenSSL (3.5.9 by its version string), zlib 1.3.2, expat 2.9.0, bzip2, liblzma, mpdecimal,
-  libedit, ncurses, libffi, libuuid and SQLite compiled into `libpython3.11.so.1.0` (on Windows, separate DLLs beside
-  `python311.dll`), and the zip carried only CPython's own `LICENSE.txt`. The notices are now vendored in
-  `scripts/python_notices/` from the project's release 20261021 (the archives' SHA-256 checked against the release's
+  libedit, ncurses, libffi, libuuid and SQLite compiled into `libpython3.12.so.1.0` (on Windows, separate DLLs beside
+  `python312.dll`), and the zip carried only CPython's own `LICENSE.txt`. The notices are now vendored in
+  `scripts/python_notices/` from the project's release 20250529 (the archives' SHA-256 checked against the release's
   `SHA256SUMS`, each file's hash in `SOURCES.txt`), copied into the zip, and listed in `LEGAL_REVIEW.txt` as item 3.
   The build stops if the interpreter is from a different release. Still open: the Windows set was chosen from the
   DLLs in the release archive, not from a Windows build of this program, and Legal has not reviewed any of it.
 - **Windows package with python.org's Python (new, 2026-10-29).** `scripts/build_embedded.py` builds a Windows package
-  with no executable of ours: python.org's embeddable CPython 3.13.17 (SHA-256 pinned in the script; python.exe
+  with no executable of ours: python.org's embeddable CPython 3.12.10 (SHA-256 pinned in the script; python.exe
   carries the Python Software Foundation's signature, found in the signature block but **not validated** on Linux) plus the
   locked wheels (each checked against `uv.lock`). Built and layout-checked on Linux, **never run on Windows**. Open:
   six third-party native files are unsigned (`_pydantic_core`, `rpds` and four from pywin32; the list is in NATIVE_FILES.txt in
@@ -127,8 +127,9 @@ Numbering is local to this scan. The last column names the corresponding cortex-
   its zip that require end users to be bound by protecting terms; the package ships a notice for that (wording needs Legal's approval); the zip is verified against python.org's OpenPGP signature (key 7ED10B65...34E5, checked in and
   pinned by fingerprint) as well as a pinned SHA-256, but the fingerprint's provenance (python.org's published key list
   could not be reached when it was chosen) needs one confirmation by a person; the library notices are python.org's own
-  `Doc/license.rst` for the release plus the python-build-standalone texts; Python 3.11 and 3.12 cannot be used because python.org stopped
-  publishing embeddable builds for them (3.12.10 is the last, missing six later security releases).
+  `Doc/license.rst` for the release plus the python-build-standalone texts; the interpreter is deliberately 3.12.10, the last 3.12 with a python.org embeddable zip, so it lacks the fixes of the six later
+  source-only 3.12 releases (3.12.11 to 3.12.16), which cannot be had as Windows binaries from python.org; a dated move to 3.13/3.14 is
+  proposed (python.org already publishes 3.13.18 as source only).
 - **The wheels zip carries the `cryptography` wheel** (via the `mcp` dependency), which has OpenSSL linked in, and
   `cffi`, which carries libffi. Their licence files are in `THIRD_PARTY_LICENSES`; the standalone program does not
   contain either package. No wheel for `pip`, `setuptools` or an interpreter is in either zip.

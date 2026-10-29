@@ -69,7 +69,7 @@ from build_installer import (LICENSE_NAME_RE, BuildError, git_commit, log, norma
 REPO = Path(__file__).resolve().parents[1]
 PACKAGE = "lattice-diamond-mcp"
 UV_VERSION = "0.13.5"          # the uv that resolved the lock and fetches the interpreter below
-PYTHON_VERSION = "3.11.17"     # the CPython embedded in the program (uv-managed, glibc 2.17 build)
+PYTHON_VERSION = "3.12.10"     # the CPython embedded in the program (uv-managed, glibc 2.17 build)
 NOTICES_DIR = REPO / "scripts" / "python_notices"   # notices of the libraries inside the embedded CPython (fetch_python_notices.py)
 MAX_GLIBC = (2, 17)            # Red Hat 7; the build fails if a bundled file needs newer
 IS_WINDOWS = sys.platform == "win32"
