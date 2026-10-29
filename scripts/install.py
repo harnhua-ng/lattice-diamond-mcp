@@ -501,7 +501,48 @@ def binary_server(install_dir):
     return os.path.join(install_dir, "diamond-mcp.exe" if IS_WINDOWS else "diamond-mcp")
 
 
-def place_folder(args, source, install_dir, what="program"):
+SWAP_ATTEMPTS = 8       # tries to move the new folder into place on Windows
+SWAP_PAUSE = 1.0        # seconds before the second try; each further try waits one second longer, up to four
+
+
+def swap_into_place(staging, install_dir):
+    """Make `staging` the folder `install_dir`, replacing what is there.
+
+    Windows refuses to rename a folder while anything inside it is open, and refuses to reuse a name whose old folder is
+    still "delete pending". Antivirus and file indexers open freshly written files, so this fails for a moment even when
+    no program of ours is running. It is retried; as a last resort the files are copied into place instead of the folder
+    being renamed. The first error is raised if nothing works."""
+    first = None
+    for attempt in range(SWAP_ATTEMPTS if IS_WINDOWS else 1):
+        try:
+            if os.path.isdir(install_dir):
+                shutil.rmtree(install_dir)
+            os.rename(staging, install_dir)
+            return
+        except OSError as exc:
+            first = first or exc
+            if not IS_WINDOWS:
+                raise
+            time.sleep(min(SWAP_PAUSE * (1 + attempt), 4 * SWAP_PAUSE))
+    try:
+        if os.path.isdir(install_dir):
+            shutil.rmtree(install_dir)
+        shutil.copytree(staging, install_dir, symlinks=True)
+        shutil.rmtree(staging, ignore_errors=True)
+    except OSError:
+        raise first
+
+
+def holders_of(*folders):
+    """'PID name' of every process running from any of the folders that exist."""
+    found = []
+    for folder in folders:
+        if os.path.isdir(folder):
+            found += pids_running_from(folder)
+    return found
+
+
+def place_folder(args, source, install_dir, what="program", retried=False):
     """Copy `source` to `install_dir` (replacing a folder this installer made, refusing any other), marked as ours.
     Returns False on a dry run, when nothing was copied."""
     marker = os.path.join(install_dir, MARKER)
@@ -522,13 +563,24 @@ def place_folder(args, source, install_dir, what="program"):
         shutil.copytree(source, staging, symlinks=True)
         with open(os.path.join(staging, MARKER), "w", encoding="utf-8") as handle:
             handle.write("Created by the lattice-diamond-mcp installer. Safe to delete with --uninstall.\n")
-        if os.path.isdir(install_dir):
-            shutil.rmtree(install_dir)
-        os.rename(staging, install_dir)
+        swap_into_place(staging, install_dir)
     except OSError as exc:
+        holders = holders_of(install_dir, staging)
         shutil.rmtree(staging, ignore_errors=True)
-        raise InstallError("Could not install into %s (%s). If the server is running, close your AI client "
-                           "and try again." % (install_dir, exc))
+        if holders and not retried:
+            # A server started, or began holding files, after the check before the copy: ask the same question again
+            # (stop them, wait while the user does, or exit), then do the copy once more.
+            say("Something is running from the folder now: %s" % ", ".join(holders))
+            free_directory(args, install_dir)
+            return place_folder(args, source, install_dir, what, True)
+        if holders:
+            raise InstallError("Could not install into %s (%s). Still running from it: %s. Close your AI client or stop "
+                               "those processes and run the installer again." % (install_dir, exc, ", ".join(holders)))
+        raise InstallError(
+            "Could not install into %s (%s).\nNo MCP server was found running from it. Windows refused to move the copied "
+            "files into place, which is usually antivirus (Windows Defender) or a file indexer still scanning them. Wait a "
+            "minute and run the installer again; if it keeps happening, exclude %s from real-time scanning. If your AI client "
+            "has the server running from an earlier install, close it too." % (install_dir, exc, os.path.dirname(install_dir)))
     return True
 
 

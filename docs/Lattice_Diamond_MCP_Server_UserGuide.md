@@ -338,6 +338,7 @@ your audit log, your config file or your projects.
 | `... already exists and was not created by this installer` | Choose another `--install-dir` or `--venv-dir`; the installer never changes a folder it did not create. |
 | `The diamond-mcp folder is missing next to install.py` | Run `install.py` from the unpacked zip, not from somewhere else. |
 | `Could not install into ... If the server is running, close your AI client` | Your AI client has the old program running; close it and run the installer again. |
+| `Could not install into ... Access is denied` | Windows would not move the copied files into place. If the message lists processes, stop them or answer the installer's question; if it says no server was found, antivirus (Windows Defender) or a file indexer is still scanning the new files: wait a minute and run the installer again, or exclude the folder named in the message from real-time scanning. |
 | `A server named 'lattice-diamond-mcp' is already registered ... does not point to this installation` | Another server uses that name. Remove it with `claude mcp remove lattice-diamond-mcp`, or use `--name`. |
 | The installed program fails with `GLIBC_x.y not found` | This machine's glibc is older than the build needs. Report the message; it is checked when the zip is built, so it should not happen. |
 

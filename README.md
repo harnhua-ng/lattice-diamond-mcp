@@ -599,7 +599,11 @@ no one to answer (stdin closed, a script, an AI assistant) it exits with status 
 SIGTERM, then SIGKILL after five seconds, on Linux and `taskkill /F /T` (the whole process tree, because the
 environment's `python.exe` is a launcher and its child holds the modules) on Windows. The check runs before
 pip or the copy touches anything, and `--uninstall` makes it before removing the registration, so exiting
-leaves both in place. A folder the installer did not create is never checked or touched. The mechanism is
+leaves both in place. The check can miss a holder that appears later, and Windows also refuses to move the freshly
+copied folder into place while anything has a file in it open (antivirus and file indexers do, for a moment, even when no
+server runs). That last step is therefore retried for about 20 seconds, then done by copying the files instead of renaming
+the folder; if a process is found running from the folder at that point the same question is asked again and the copy
+redone, and if none is found the error says so and points at antivirus instead of blaming the AI client. A folder the installer did not create is never checked or touched. The mechanism is
 the one in `scripts/install.py` of cortex-bridge (`--if-locked`).
 
 Both mark the folder they create with `.diamond-mcp-installer` and never reuse, replace or

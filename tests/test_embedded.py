@@ -629,3 +629,119 @@ def test_the_server_imports_none_of_the_packages_the_package_leaves_out():
                             env=dict(os.environ, PYTHONPATH=str(SCRIPTS.parent / "src")))
     assert result.returncode == 0, result.stdout + result.stderr
     assert set(embedded.OMITTED_PACKAGES) == {"pyjwt", "cryptography", "cffi", "pycparser"}
+
+
+# ------------------------------------------------- moving the copied folder into place (Windows refuses while files are open)
+
+def staged(tmp_path, content="new"):
+    staging = tmp_path / "python.installing"
+    staging.mkdir()
+    (staging / "python.exe").write_text(content)
+    return staging
+
+
+def test_on_windows_a_refused_rename_is_retried_until_it_works(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    monkeypatch.setattr(install, "SWAP_PAUSE", 0)
+    real, calls = os.rename, []
+
+    def flaky(source, target):
+        calls.append(source)
+        if len(calls) < 3:
+            raise PermissionError(5, "Access is denied")
+        real(source, target)
+    monkeypatch.setattr(install.os, "rename", flaky)
+    target = tmp_path / "python"
+    install.swap_into_place(str(staged(tmp_path)), str(target))
+    assert len(calls) == 3 and (target / "python.exe").read_text() == "new" and not (tmp_path / "python.installing").exists()
+
+
+def test_when_the_rename_never_works_the_files_are_copied_into_place(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    monkeypatch.setattr(install, "SWAP_PAUSE", 0)
+    monkeypatch.setattr(install.os, "rename", lambda a, b: (_ for _ in ()).throw(PermissionError(5, "Access is denied")))
+    target = tmp_path / "python"
+    target.mkdir()
+    (target / "old.txt").write_text("old")
+    install.swap_into_place(str(staged(tmp_path)), str(target))
+    assert (target / "python.exe").read_text() == "new" and not (target / "old.txt").exists()
+    assert not (tmp_path / "python.installing").exists()
+
+
+def test_off_windows_the_first_failure_is_raised_without_retrying(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "IS_WINDOWS", False)
+    calls = []
+    monkeypatch.setattr(install.os, "rename", lambda a, b: calls.append(1) or (_ for _ in ()).throw(PermissionError(13, "denied")))
+    with pytest.raises(PermissionError):
+        install.swap_into_place(str(staged(tmp_path)), str(tmp_path / "python"))
+    assert calls == [1]
+
+
+def test_if_even_copying_fails_the_first_error_is_raised(tmp_path, monkeypatch):
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    monkeypatch.setattr(install, "SWAP_PAUSE", 0)
+    monkeypatch.setattr(install, "SWAP_ATTEMPTS", 2)
+    monkeypatch.setattr(install.os, "rename", lambda a, b: (_ for _ in ()).throw(PermissionError(5, "first")))
+    monkeypatch.setattr(install.shutil, "copytree", lambda *a, **k: (_ for _ in ()).throw(OSError("copy failed")))
+    with pytest.raises(PermissionError, match="first"):
+        install.swap_into_place(str(staged(tmp_path)), str(tmp_path / "python"))
+
+
+def failing_swap(monkeypatch, times):
+    """swap_into_place that fails `times` times, then really swaps; returns the list of calls."""
+    real, calls = install.swap_into_place, []
+
+    def swap(staging, target):
+        calls.append(1)
+        if len(calls) <= times:
+            raise PermissionError(5, "Access is denied")
+        real(staging, target)
+    monkeypatch.setattr(install, "swap_into_place", swap)
+    return calls
+
+
+def test_with_nothing_running_the_error_blames_antivirus_not_the_ai_client(tmp_path, monkeypatch):
+    embedded_source(tmp_path / "zip")
+    failing_swap(monkeypatch, 99)
+    monkeypatch.setattr(install, "holders_of", lambda *folders: [])
+    args = install.parse_args(["--install-dir", str(tmp_path / "target")])
+    with pytest.raises(install.InstallError) as caught:
+        install.place_folder(args, str(tmp_path / "zip" / "python"), str(tmp_path / "target"))
+    message = str(caught.value)
+    assert "No MCP server was found running from it" in message and "antivirus" in message and "Access is denied" in message
+    assert not (tmp_path / "target.installing").exists()
+
+
+def test_a_server_that_appears_before_the_move_gets_the_same_stop_or_wait_question_and_the_copy_is_redone(tmp_path, monkeypatch):
+    embedded_source(tmp_path / "zip")
+    calls = failing_swap(monkeypatch, 1)
+    monkeypatch.setattr(install, "holders_of", lambda *folders: ["4242 python.exe"])
+    asked = []
+    monkeypatch.setattr(install, "free_directory", lambda args, path: asked.append(path))
+    args = install.parse_args(["--install-dir", str(tmp_path / "target")])
+    assert install.place_folder(args, str(tmp_path / "zip" / "python"), str(tmp_path / "target")) is True
+    assert asked == [str(tmp_path / "target")] and len(calls) == 2
+    assert (tmp_path / "target" / "python.exe").exists() and (tmp_path / "target" / install.MARKER).exists()
+
+
+def test_a_holder_that_is_still_there_after_the_question_is_named_in_the_error(tmp_path, monkeypatch):
+    embedded_source(tmp_path / "zip")
+    failing_swap(monkeypatch, 99)
+    monkeypatch.setattr(install, "holders_of", lambda *folders: ["4242 python.exe"])
+    monkeypatch.setattr(install, "free_directory", lambda args, path: None)
+    args = install.parse_args(["--install-dir", str(tmp_path / "target")])
+    with pytest.raises(install.InstallError, match="Still running from it: 4242 python.exe"):
+        install.place_folder(args, str(tmp_path / "zip" / "python"), str(tmp_path / "target"))
+
+
+def test_exiting_at_the_question_stops_the_install(tmp_path, monkeypatch):
+    embedded_source(tmp_path / "zip")
+    failing_swap(monkeypatch, 99)
+    monkeypatch.setattr(install, "holders_of", lambda *folders: ["4242 python.exe"])
+
+    def decline(args, path):
+        raise install.InstallError("Nothing was changed.")
+    monkeypatch.setattr(install, "free_directory", decline)
+    args = install.parse_args(["--install-dir", str(tmp_path / "target")])
+    with pytest.raises(install.InstallError, match="Nothing was changed"):
+        install.place_folder(args, str(tmp_path / "zip" / "python"), str(tmp_path / "target"))
