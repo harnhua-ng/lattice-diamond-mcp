@@ -72,9 +72,109 @@ def test_signature_block_finds_the_signer_and_reports_none_for_unsigned_or_other
 def test_the_embeddable_zip_must_match_the_pinned_hash(tmp_path, monkeypatch):
     zip_path = make_embed_zip(tmp_path / "e.zip")
     with pytest.raises(embedded.BuildError, match="expected"):
-        embedded.fetch_embeddable(tmp_path, zip_path)
+        embedded.fetch_embeddable(tmp_path, zip_path, check_pgp=False)
     monkeypatch.setattr(embedded, "EMBED_SHA256", hashlib.sha256(zip_path.read_bytes()).hexdigest())
-    assert embedded.fetch_embeddable(tmp_path, zip_path) == zip_path
+    assert embedded.fetch_embeddable(tmp_path, zip_path, check_pgp=False) == (zip_path, None)
+
+
+# ----------------------------------------------------------------------- OpenPGP signature
+
+FPR = embedded.PGP_FINGERPRINT
+
+
+def status(*lines):
+    return "\n".join("[GNUPG:] " + line for line in lines) + "\n"
+
+
+def test_gpg_status_with_a_good_signature_by_the_pinned_key_passes():
+    good = status("GOODSIG FC624643487034E5 Someone", "VALIDSIG %s 2026-10-21 1 0 4 0 1 8 00 %s" % (FPR, FPR), "TRUST_UNDEFINED 0 pgp")
+    assert embedded.check_gpg_status(good) == FPR
+    subkey = status("GOODSIG AAAA Someone", "VALIDSIG 1111222233334444555566667777888899990000 2026-10-21 1 0 4 0 1 8 00 " + FPR)
+    assert embedded.check_gpg_status(subkey) == FPR          # signed by a subkey of the pinned key
+
+
+@pytest.mark.parametrize("lines, message", [
+    (["BADSIG AAAA Someone"], "BADSIG"),
+    (["EXPKEYSIG AAAA Someone", "VALIDSIG %s x 1 0 4 0 1 8 00 %s" % (FPR, FPR)], "EXPKEYSIG"),
+    (["REVKEYSIG AAAA Someone"], "REVKEYSIG"),
+    (["NO_PUBKEY AAAA", "ERRSIG AAAA 1 8 00 1 9 -"], "ERRSIG|NO_PUBKEY"),
+    (["GOODSIG AAAA Someone"], "did not report"),
+    (["GOODSIG AAAA Someone", "VALIDSIG " + "A" * 40 + " x 1 0 4 0 1 8 00 " + "A" * 40], "not by the pinned key"),
+])
+def test_gpg_status_that_is_not_a_good_signature_by_the_pinned_key_fails(lines, message):
+    with pytest.raises(embedded.BuildError, match=message):
+        embedded.check_gpg_status(status(*lines))
+
+
+def test_the_checked_in_key_is_the_pinned_one():
+    import re
+    text = embedded.PGP_KEY.read_text()
+    assert "BEGIN PGP PUBLIC KEY BLOCK" in text and "PRIVATE" not in text
+    assert re.fullmatch(r"[0-9A-F]{40}", FPR)
+
+
+gpg_available = pytest.mark.skipif(not (__import__("shutil").which("gpg") or __import__("shutil").which("gpg2")), reason="gpg not installed")
+
+
+def make_signed_file(tmp_path, monkeypatch):
+    """A file signed with a throwaway key; the build's pin and key file are pointed at that key."""
+    import shutil
+    import subprocess
+    gpg = shutil.which("gpg") or shutil.which("gpg2")
+    home = tmp_path / "gnupg"
+    home.mkdir(mode=0o700)
+    env = dict(os.environ, GNUPGHOME=str(home), LC_ALL="C")
+    subprocess.run([gpg, "--batch", "--no-tty", "--passphrase", "", "--quick-generate-key", "Test Signer <t@example.invalid>",
+                    "ed25519", "sign", "never"], env=env, check=True, capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
+    listing = subprocess.run([gpg, "--batch", "--with-colons", "--fingerprint", "--list-keys"], env=env, check=True,
+                             capture_output=True, text=True).stdout
+    fingerprint = next(line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:"))
+    key = tmp_path / "key.asc"
+    key.write_bytes(subprocess.run([gpg, "--batch", "--armor", "--export", fingerprint], env=env, check=True, capture_output=True).stdout)
+    data = tmp_path / "data.zip"
+    data.write_bytes(b"the interpreter")
+    sig = tmp_path / "data.zip.asc"
+    subprocess.run([gpg, "--batch", "--no-tty", "--armor", "--detach-sign", "--output", str(sig), str(data)], env=env, check=True,
+                   capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
+    monkeypatch.setattr(embedded, "PGP_FINGERPRINT", fingerprint)
+    return data, sig, key
+
+
+@gpg_available
+def test_a_file_signed_by_the_pinned_key_verifies(tmp_path, monkeypatch):
+    data, sig, key = make_signed_file(tmp_path, monkeypatch)
+    assert embedded.verify_pgp(data, sig, key) == embedded.PGP_FINGERPRINT
+
+
+@gpg_available
+def test_a_changed_file_or_a_different_key_does_not_verify(tmp_path, monkeypatch):
+    data, sig, key = make_signed_file(tmp_path, monkeypatch)
+    data.write_bytes(b"the interpreter, changed")
+    with pytest.raises(embedded.BuildError, match="does not verify"):
+        embedded.verify_pgp(data, sig, key)
+    data.write_bytes(b"the interpreter")
+    monkeypatch.setattr(embedded, "PGP_FINGERPRINT", "A" * 40)             # a different pin than the key that signed
+    with pytest.raises(embedded.BuildError, match="does not contain the pinned key"):
+        embedded.verify_pgp(data, sig, key)
+
+
+@gpg_available
+def test_a_missing_key_file_and_a_missing_gpg_are_reported(tmp_path, monkeypatch):
+    data, sig, key = make_signed_file(tmp_path, monkeypatch)
+    with pytest.raises(embedded.BuildError, match="missing from the repository"):
+        embedded.verify_pgp(data, sig, tmp_path / "nokey.asc")
+    monkeypatch.setattr(embedded.shutil, "which", lambda name: None)
+    with pytest.raises(embedded.BuildError, match="gpg is not installed"):
+        embedded.verify_pgp(data, sig, key)
+
+
+def test_pgp_is_checked_by_default_and_skipping_is_recorded_as_unverified(tmp_path, monkeypatch):
+    zip_path = make_embed_zip(tmp_path / "e.zip")
+    monkeypatch.setattr(embedded, "EMBED_SHA256", hashlib.sha256(zip_path.read_bytes()).hexdigest())
+    with pytest.raises(embedded.BuildError, match="gpg is not installed|does not verify|No such file|signature"):
+        monkeypatch.setattr(embedded.shutil, "which", lambda name: None)
+        embedded.fetch_embeddable(tmp_path, zip_path, signature=tmp_path / "e.zip.asc")
+    assert embedded.fetch_embeddable(tmp_path, zip_path, check_pgp=False)[1] is None
 
 
 def test_unpacking_keeps_only_python_exe_and_returns_the_licence(tmp_path):
@@ -167,7 +267,33 @@ def test_notices_are_copied_from_the_windows_set_and_listed_for_legal(tmp_path):
     text = embedded.legal_review_text(version="0.1.0", python_sha256="abc", embedded_notices=names,
                                       unsigned_modules=["rpds.pyd"], vcruntime=["vcruntime140.dll"], python_org_notices=python_org)
     for needle in ("LICENSE.openssl-3.txt", "vcruntime140.dll", "rpds.pyd", "unmodified", "did\n      not publish them",
-                   "No executable of ours", "license.rst"):
+                   "No executable of ours", "license.rst", "microsoft-distributable-code.txt", "has NOT been checked"):
+        assert needle in text, needle
+
+
+REAL_CLAUSE = """Additional Conditions for this Windows binary build
+This program is linked with and uses Microsoft Distributable Code, copyrighted by Microsoft Corporation.
+- alter any copyright, trademark or patent notice in Microsoft's
+Distributable Code;
+- use Microsoft's trademarks in your programs' names
+- distribute Microsoft's Distributable Code to run on a platform other
+than Microsoft operating systems, run-time technologies or application
+- include Microsoft Distributable Code in malicious, deceptive or
+unlawful programs.
+"""
+
+
+def test_the_microsoft_clause_is_found_in_the_real_python_licence_and_in_a_stand_in_but_not_when_changed():
+    assert embedded.microsoft_clause_present(REAL_CLAUSE)
+    assert not embedded.microsoft_clause_present(REAL_CLAUSE.replace("Microsoft Distributable Code", "something else"))
+    assert not embedded.microsoft_clause_present("PSF licence")
+
+
+def test_the_microsoft_notice_lists_the_restrictions_and_the_files():
+    text = embedded.microsoft_notice_text(["python.exe", "vcruntime140.dll"])
+    for needle in ("Microsoft Distributable Code", "alter any copyright, trademark or patent notice", "trademarks",
+                   "platform other than Microsoft operating systems", "malicious, deceptive or unlawful", "reverse engineer",
+                   "python.exe, vcruntime140.dll", "cpython-%s/LICENSE.txt" % embedded.EMBED_VERSION):
         assert needle in text, needle
 
 
@@ -288,3 +414,21 @@ def test_a_wheels_zip_still_cannot_be_combined_as_standalone(tmp_path):
     (tmp_path / "in").mkdir()
     zips = [make_zip(tmp_path / "in", "windows-x86_64", "embedded"), make_zip(tmp_path / "in", "linux-x86_64", "wheels")]
     assert combine.main(["--kind", "standalone", "--outdir", str(tmp_path / "out")] + [str(z) for z in zips]) == 1
+
+
+# ------------------------------------------------------------------ the list of native files
+
+def test_the_inventory_names_every_native_file_and_who_signed_it(tmp_path):
+    (tmp_path / "python").mkdir()
+    (tmp_path / "python" / "python.exe").write_bytes(fake_pe(b"Python Software Foundation"))
+    (tmp_path / "python" / "vcruntime140.dll").write_bytes(fake_pe(b"Microsoft Windows Software Compatibility Publisher"))
+    (tmp_path / "python" / "other.dll").write_bytes(fake_pe(b"Some Vendor Ltd"))
+    (tmp_path / "python" / "mod.pyd").write_bytes(fake_pe(b""))
+    (tmp_path / "python" / "readme.txt").write_text("not native")
+    rows = embedded.native_inventory(tmp_path)
+    assert {r[0]: r[1] for r in rows} == {"python/mod.pyd": "unsigned", "python/other.dll": "signed (other)",
+                                          "python/python.exe": "Python Software Foundation",
+                                          "python/vcruntime140.dll": "Microsoft"}
+    text = embedded.inventory_text(rows)
+    assert "not validated" in text and "Totals:" in text and "1 unsigned" in text
+    assert all(len(r[2]) == 64 for r in rows)

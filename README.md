@@ -477,8 +477,11 @@ has signed, with the packages from `uv.lock` unpacked into its `Lib\site-package
 python scripts/build_embedded.py --outdir dist      # Windows or Linux; test-installs only on Windows
 ```
 
-What the build checks, and stops on: the zip against the SHA-256 pinned in the script (`EMBED_SHA256`, taken
-from a download over https; python.org publishes no hash to compare with); that `python.exe` carries the
+What the build checks, and stops on: the zip against the SHA-256 pinned in the script (`EMBED_SHA256`) **and**
+against python.org's OpenPGP signature (`.asc`) with the Windows release signer's key, which is checked in at
+`scripts/keys/python-windows-release-signing.asc` and pinned by fingerprint (`PGP_FINGERPRINT`, Steve Dower, Python
+Release Signing); needs `gpg` (Git for Windows has it), and `--skip-pgp` exists for local experiments and marks the
+build `python_pgp_verified: false`; that `python.exe` carries the
 Python Software Foundation's name in its signature block (the signature itself is not validated by the script;
 the workflow's verify job has Windows check it with `Get-AuthenticodeSignature`); each wheel against its SHA-256
 in `uv.lock`; no wheel with scripts; and that the only program in the package is `python.exe` (`pythonw.exe` is
@@ -486,8 +489,17 @@ removed). The `._pth` file is rewritten to the library zip, the folder and `Lib\
 
 The package carries `LEGAL_REVIEW.txt` (the interpreter is unmodified; the notices for the libraries python.org
 builds in are python.org's own list for the release (`Doc/license.rst` and the library versions of its Windows build, copied from the CPython tag into `scripts/python_notices/cpython-3.13.17/`) plus the python-build-standalone texts from `scripts/python_notices/windows-x86_64/`;
-Microsoft's `vcruntime140*.dll` come in python.org's zip; four third-party `.pyd` files are unsigned; the product
-`LICENSE` is a copy), `THIRD_PARTY_LICENSES/` and `BUILDINFO` (`"kind": "embedded"`).
+python.org's Windows binaries contain Microsoft Distributable Code (`vcruntime140*.dll`), whose terms are in the
+`LICENSE.txt` of python.org's zip ("Additional Conditions for this Windows binary build") and require that end users agree
+to terms protecting it, so the package ships `THIRD_PARTY_LICENSES/microsoft-distributable-code.txt` (reached through
+section 4 of the product licence, which is not edited; its reverse-engineering sentence is unverified wording from the
+project owner, and the build warns if python.org's clause ever changes); four third-party `.pyd` files are unsigned; the product
+`LICENSE` is a copy), `THIRD_PARTY_LICENSES/`, `NATIVE_FILES.txt` (every program, DLL and extension module with its signer and SHA-256) and
+`BUILDINFO` (`"kind": "embedded"`).
+
+**Updating the signing key pin.** python.org's Windows files are signed by the key in `PGP_FINGERPRINT`. When a release
+is signed by someone else, fetch the new key, confirm its fingerprint against python.org's published list of
+release-signing keys (the script cannot do that for you), replace the key file and the constant together.
 
 **Which Python.** python.org builds an embeddable zip only for releases that have binaries, and stopped for 3.11 and
 3.12 at 3.11.9 and 3.12.10 (all later patch releases are source only). Shipping those would mean shipping an

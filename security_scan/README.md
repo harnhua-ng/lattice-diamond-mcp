@@ -121,8 +121,10 @@ Numbering is local to this scan. The last column names the corresponding cortex-
   with no executable of ours: python.org's embeddable CPython 3.13.17 (SHA-256 pinned in the script; python.exe
   carries the Python Software Foundation's signature, found in the signature block but **not validated** on Linux) plus the
   locked wheels (each checked against `uv.lock`). Built and layout-checked on Linux, **never run on Windows**. Open:
-  four third-party `.pyd` files are unsigned; Microsoft's `vcruntime140*.dll` come in python.org's zip; python.org
-  publishes no checksum for the zip, so the pin is trust-on-first-download; the library notices are python.org's own
+  four third-party `.pyd` files are unsigned; python.org's Windows binaries carry Microsoft Distributable Code (`vcruntime140*.dll`) under conditions in the LICENSE.txt of
+  its zip that require end users to be bound by protecting terms; the package ships a notice for that (wording needs Legal's approval); the zip is verified against python.org's OpenPGP signature (key 7ED10B65...34E5, checked in and
+  pinned by fingerprint) as well as a pinned SHA-256, but the fingerprint's provenance (python.org's published key list
+  could not be reached when it was chosen) needs one confirmation by a person; the library notices are python.org's own
   `Doc/license.rst` for the release plus the python-build-standalone texts; Python 3.11 and 3.12 cannot be used because python.org stopped
   publishing embeddable builds for them (3.12.10 is the last, missing six later security releases).
 - **The wheels zip carries the `cryptography` wheel** (via the `mcp` dependency), which has OpenSSL linked in, and

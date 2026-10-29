@@ -16,7 +16,9 @@ unpacked beside it; the server is `python\\python.exe -I -m diamond_mcp`.
         python/     python.exe, python313.dll, the standard-library zip and extension modules (as published),
                     python313._pth, Lib/site-packages/ (the packages from uv.lock and this project)
 
-What is checked: the embeddable zip against the SHA-256 pinned below; that python.exe carries a signature
+What is checked: the embeddable zip against the SHA-256 pinned below and against its OpenPGP signature (the .asc
+python.org publishes beside it, made with the Windows release signer's key, which is checked in; needs gpg);
+that python.exe carries a signature
 from the Python Software Foundation (the name is looked for in its signature block; the signature is NOT
 validated here, Windows does that); every package against the SHA-256 in uv.lock; and that the folder holds
 no program but python.exe. On Windows the finished package is also installed with its own install.py and
@@ -36,6 +38,7 @@ import json
 import os
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -55,6 +58,15 @@ EMBED_URL = "https://www.python.org/ftp/python/%s/python-%s-embed-amd64.zip" % (
 PYTHON_TAG = "cp%s" % "".join(EMBED_VERSION.split(".")[:2])
 PLATFORM = "windows-x86_64"
 SIGNER = b"Python Software Foundation"
+# python.org signs each Windows file with an OpenPGP signature (the .asc beside it), made with the key of the
+# Windows release signer. The fingerprint below is the pin; the key itself is checked in so that a build never has to
+# trust a key server or python.org for it. Where the pin came from: the key ID in python.org's .asc for this release
+# (FC624643487034E5), the key fetched from a key server by this fingerprint, and the user ID it carries
+# ("Steve Dower (Python Release Signing)"). Whoever updates it should confirm the fingerprint against python.org's
+# published list of release-signing keys.
+PGP_FINGERPRINT = "7ED10B6531D7C8E1BC296021FC624643487034E5"
+PGP_KEY = REPO / "scripts" / "keys" / "python-windows-release-signing.asc"
+PGP_BAD_STATUS = ("BADSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "ERRSIG", "NO_PUBKEY")
 NOTICES_DIR = REPO / "scripts" / "python_notices"
 ONLY_PROGRAMS = {"python.exe"}                    # the only .exe allowed in the package (pythonw.exe is removed)
 
@@ -79,8 +91,53 @@ def signature_block(path):
     return data[offset:offset + size] if offset and size and offset + size <= len(data) else b""
 
 
-def fetch_embeddable(workdir, given=None):
-    """Return the path of the verified embeddable zip."""
+def check_gpg_status(status):
+    """BuildError unless gpg's --status-fd output shows a good signature by the pinned key. Returns the fingerprint."""
+    lines = [line.split() for line in status.splitlines() if line.startswith("[GNUPG:]")]
+    words = {line[1] for line in lines if len(line) > 1}
+    bad = sorted(words & set(PGP_BAD_STATUS))
+    if bad:
+        raise BuildError("The OpenPGP signature check failed (%s)." % ", ".join(bad))
+    valid = [line for line in lines if len(line) > 2 and line[1] == "VALIDSIG"]
+    if "GOODSIG" not in words or not valid:
+        raise BuildError("gpg did not report a good signature.")
+    fingerprints = {valid[0][2], valid[0][-1]}   # the signing (sub)key and its primary key
+    if PGP_FINGERPRINT not in fingerprints:
+        raise BuildError("The zip is signed by %s, not by the pinned key %s." % (valid[0][-1], PGP_FINGERPRINT))
+    return PGP_FINGERPRINT
+
+
+def verify_pgp(zip_path, signature_path, key_path=None):
+    """Check the OpenPGP signature of the zip against the checked-in key, in a throwaway keyring. Returns the fingerprint."""
+    gpg = shutil.which("gpg") or shutil.which("gpg2")
+    if gpg is None:
+        raise BuildError("gpg is not installed, so the OpenPGP signature of the interpreter cannot be checked. Install GnuPG "
+                         "(Git for Windows includes it), or pass --skip-pgp for a local experiment (never for a release).")
+    key_path = Path(key_path or PGP_KEY)
+    if not key_path.is_file():
+        raise BuildError("The signing key %s is missing from the repository." % key_path)
+    with tempfile.TemporaryDirectory() as home:
+        os.chmod(home, 0o700)
+        env = dict(os.environ, GNUPGHOME=home, LC_ALL="C")
+        base = [gpg, "--batch", "--no-tty", "--no-autostart"]
+        imported = subprocess.run(base + ["--import", str(key_path)], env=env, capture_output=True, text=True,
+                                  stdin=subprocess.DEVNULL, timeout=120)
+        if imported.returncode != 0:
+            raise BuildError("gpg could not import %s:\n%s" % (key_path, imported.stderr))
+        listing = subprocess.run(base + ["--with-colons", "--fingerprint", "--list-keys"], env=env, capture_output=True, text=True,
+                                 stdin=subprocess.DEVNULL, timeout=120).stdout
+        primaries = [line.split(":")[9] for line in listing.splitlines() if line.startswith("fpr:")]
+        if PGP_FINGERPRINT not in primaries:
+            raise BuildError("%s does not contain the pinned key %s." % (key_path, PGP_FINGERPRINT))
+        result = subprocess.run(base + ["--status-fd", "1", "--verify", str(signature_path), str(zip_path)], env=env,
+                                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=120)
+        if result.returncode != 0 and "[GNUPG:] GOODSIG" not in result.stdout:
+            raise BuildError("The OpenPGP signature of %s does not verify:\n%s" % (Path(zip_path).name, result.stderr.strip()))
+        return check_gpg_status(result.stdout)
+
+
+def fetch_embeddable(workdir, given=None, signature=None, check_pgp=True):
+    """Return (path of the verified embeddable zip, fingerprint of the key that signed it or None if skipped)."""
     if EMBED_SHA256.startswith("EMBED-"):
         raise BuildError("EMBED_SHA256 is not set in build_embedded.py.")
     target = Path(given) if given else Path(workdir) / ("python-%s-embed-amd64.zip" % EMBED_VERSION)
@@ -91,7 +148,16 @@ def fetch_embeddable(workdir, given=None):
     if digest != EMBED_SHA256:
         raise BuildError("%s has SHA-256 %s, expected %s. python.org may have replaced the file, or the download was altered; "
                          "nothing was built." % (target.name, digest, EMBED_SHA256))
-    return target
+    fingerprint = None
+    if check_pgp:
+        sig = Path(signature) if signature else Path(workdir) / (target.name + ".asc")
+        if not signature:
+            download(EMBED_URL + ".asc", sig)
+        fingerprint = verify_pgp(target, sig)
+        log("  OpenPGP signature verified (key %s)" % fingerprint)
+    else:
+        log("WARNING: the OpenPGP signature was NOT checked (--skip-pgp). Do not ship this build.")
+    return target, fingerprint
 
 
 def unpack_interpreter(embed_zip, dest):
@@ -173,6 +239,43 @@ def write_pth(interpreter):
 
 # ------------------------------------------------------------------ notices and legal
 
+MICROSOFT_NAMES = (b"Microsoft Windows Software Compatibility Publisher", b"Microsoft Corporation")
+
+
+def signer_of(path):
+    """Who signed a native file, judged from the names in its signature block (the signature is not validated)."""
+    block = signature_block(path)
+    if not block:
+        return "unsigned"
+    if SIGNER in block:
+        return "Python Software Foundation"
+    if any(name in block for name in MICROSOFT_NAMES):
+        return "Microsoft"
+    return "signed (other)"
+
+
+def native_inventory(stage):
+    """Rows (path relative to the package, signer, SHA-256) for every program, DLL and extension module in it."""
+    rows = []
+    for path in sorted(stage.rglob("*")):
+        if path.is_file() and path.suffix.lower() in (".exe", ".dll", ".pyd"):
+            rows.append((path.relative_to(stage).as_posix(), signer_of(path), sha256_file(path)))
+    return rows
+
+
+def inventory_text(rows):
+    lines = ["Every program, DLL and extension module in this package, with who signed it.", "",
+             "The signer is read from the names in the file's signature block; the signature itself is not validated by the",
+             "build (Windows does that when the file is run). 'unsigned' files have no signature at all.", ""]
+    width = max(len(r[0]) for r in rows) if rows else 10
+    for path, signer, digest in rows:
+        lines.append("%-*s  %-27s %s" % (width, path, signer, digest))
+    counts = {}
+    for _, signer, _ in rows:
+        counts[signer] = counts.get(signer, 0) + 1
+    lines += ["", "Totals: " + ", ".join("%d %s" % (n, name) for name, n in sorted(counts.items()))]
+    return "\n".join(lines) + "\n"
+
 def legal_review_text(*, version, python_sha256, embedded_notices, unsigned_modules, vcruntime, python_org_notices=()):
     lines = [
         "Items for Legal review - %s %s (%s, python.org embeddable Python)" % (PACKAGE, version, PLATFORM),
@@ -208,17 +311,31 @@ def legal_review_text(*, version, python_sha256, embedded_notices, unsigned_modu
         "",
         "   Question for Legal: do these suffice for the libraries in python.org's build?",
         "",
-        "3. Microsoft's Visual C++ runtime files are shipped by python.org in the zip",
+        "3. Microsoft Distributable Code in python.org's Windows binaries",
         "",
-        "   " + (", ".join(vcruntime) if vcruntime else "none found") + ". They are redistributed by python.org under Microsoft's",
-        "   terms for the Visual C++ runtime. Their licence text is not in the package.",
+        "   " + (", ".join(vcruntime) if vcruntime else "none found") + " are Microsoft's Visual C++ runtime (version info:",
+        "   'Microsoft(R) C Runtime Library', (c) Microsoft Corporation), signed by Microsoft. python.org's LICENSE.txt, shipped",
+        "   in THIRD_PARTY_LICENSES/cpython-%s/, says in 'Additional Conditions for this Windows binary build' that" % EMBED_VERSION,
+        "   Microsoft Distributable Code is embedded in each .exe, .dll and .pyd file it builds, that redistributing the",
+        "   interpreter complies with its terms provided four things are not done (alter notices, use Microsoft's trademarks,",
+        "   run it on a non-Microsoft platform, put it in malicious programs), and that anyone who further distributes it",
+        "   'must require distributors and external end users to agree to terms that protect the Microsoft Distributable Code",
+        "   at least as much as Microsoft's own requirements'.",
         "",
-        "   Question for Legal: is redistribution of these files, as python.org does, covered for this product?",
+        "   The product LICENSE (AI Solutions Software License Agreement) has no reverse-engineering or similar clause and is not",
+        "   edited. This build therefore ships THIRD_PARTY_LICENSES/microsoft-distributable-code.txt, listed in",
+        "   THIRD_PARTY_LICENSES.txt, which section 4 of the LICENSE makes binding. Its four restrictions are the ones in",
+        "   python.org's text; its last item (no reverse engineering, decompiling or disassembling except as law permits) was",
+        "   supplied by the project owner and has NOT been checked against Microsoft's own terms.",
+        "",
+        "   Questions for Legal: does that notice, reached through section 4, satisfy the requirement to bind end users? Is the",
+        "   reverse-engineering sentence consistent with Microsoft's actual redistribution terms?",
         "",
         "4. Unsigned native modules from third-party wheels",
         "",
         "   " + (", ".join(unsigned_modules) if unsigned_modules else "none") + ". They are not executables of ours and carry no",
-        "   signature. A site that enforces signed binaries (AppLocker, WDAC) may object to them.",
+        "   signature (NATIVE_FILES.txt lists them with their SHA-256). A site that enforces signed binaries (AppLocker, WDAC)",
+        "   may object to them.",
         "",
         "5. The product licence text in this zip was copied, not written for this product",
         "",
@@ -229,6 +346,48 @@ def legal_review_text(*, version, python_sha256, embedded_notices, unsigned_modu
         "",
     ]
     return "\n".join(lines)
+
+
+MICROSOFT_CLAUSE = "Microsoft Distributable Code"
+MICROSOFT_RESTRICTIONS = ("alter any copyright, trademark or patent notice", "use Microsoft's trademarks",
+                          "other\nthan Microsoft operating systems", "malicious, deceptive or\nunlawful programs")
+
+
+def microsoft_clause_present(licence_text):
+    """True if python.org's LICENSE.txt still has the 'Additional Conditions for this Windows binary build' clause
+    that the notice below relies on, with the four restrictions it lists."""
+    return MICROSOFT_CLAUSE in licence_text and all(item in licence_text for item in MICROSOFT_RESTRICTIONS)
+
+
+def microsoft_notice_text(python_files):
+    """THIRD_PARTY_LICENSES/microsoft-distributable-code.txt. Section 4 of the product licence makes the terms in
+    THIRD_PARTY_LICENSES.txt binding on the user, so this is where the protection Microsoft's terms ask for goes (the
+    product LICENSE is a copy of an approved text and is not edited)."""
+    return "\n".join([
+        "Microsoft Distributable Code",
+        "",
+        "The Windows programs and libraries from python.org in the python folder of this package (python.exe,",
+        "python%s.dll, vcruntime140.dll, vcruntime140_1.dll and the other .dll and .pyd files that python.org builds)" % PYTHON_TAG[2:],
+        "contain or link Microsoft Distributable Code, copyright Microsoft Corporation, distributed here unmodified,",
+        "as python.org distributes it. The Python Software Foundation's licence for these builds (cpython-%s/LICENSE.txt," % EMBED_VERSION,
+        "section 'Additional Conditions for this Windows binary build') requires that users of this package agree to terms",
+        "that protect the Microsoft Distributable Code at least as much as Microsoft's own requirements. By using this",
+        "package you agree that you will not:",
+        "",
+        "  - alter any copyright, trademark or patent notice in Microsoft's Distributable Code;",
+        "  - use Microsoft's trademarks in your programs' names or in a way that suggests your programs come from or are",
+        "    endorsed by Microsoft;",
+        "  - distribute Microsoft's Distributable Code to run on a platform other than Microsoft operating systems,",
+        "    run-time technologies or application platforms;",
+        "  - include Microsoft Distributable Code in malicious, deceptive or unlawful programs; or",
+        "  - reverse engineer, decompile or disassemble the Microsoft Distributable Code, except and only to the extent that",
+        "    applicable law expressly permits.",
+        "",
+        "These terms apply only to the Microsoft Distributable Code, not to Python or to this software.",
+        "",
+        "Files of this kind in the package: " + (", ".join(python_files) if python_files else "see NATIVE_FILES.txt") + ".",
+        "",
+    ])
 
 
 def collect_python_org_notices(out_dir, notices_dir=None):
@@ -284,7 +443,7 @@ def verify_install(stage):
 
 # ------------------------------------------------------------------------ build
 
-def build(stage, embed_zip):
+def build(stage, embed_zip, pgp_fingerprint=None):
     version = project_version()
     interpreter = stage / "python"
     interpreter.mkdir(parents=True)
@@ -302,6 +461,8 @@ def build(stage, embed_zip):
         site_names = sorted({n.split("/", 1)[0] for w in wheels.glob("*.whl") for n in zipfile.ZipFile(w).namelist()
                              if "/" in n and not n.split("/", 1)[0].endswith((".dist-info", ".data"))})
     write_pth(interpreter)
+    inventory = native_inventory(stage)
+    (stage / "NATIVE_FILES.txt").write_text(inventory_text(inventory), encoding="utf-8")
 
     cpython_dir = stage / "THIRD_PARTY_LICENSES" / ("cpython-" + EMBED_VERSION)
     cpython_dir.mkdir(parents=True, exist_ok=True)
@@ -318,6 +479,15 @@ def build(stage, embed_zip):
     index += "\ncpython %s  [PSF-2.0]\n    LICENSE.txt\n" % EMBED_VERSION
     index += "".join("    embedded-libraries/%s\n" % n for n in notices)
     index += "".join("    python.org/%s\n" % n for n in python_org)
+    python_licence_text = python_licence.read_text(encoding="utf-8", errors="replace") if python_licence.is_file() else ""
+    clause = microsoft_clause_present(python_licence_text)
+    if clause:
+        (stage / "THIRD_PARTY_LICENSES" / "microsoft-distributable-code.txt").write_text(
+            microsoft_notice_text(sorted(p.name for p in interpreter.iterdir() if p.suffix.lower() in (".exe", ".dll", ".pyd"))),
+            encoding="utf-8")
+        index += "\nMicrosoft Distributable Code (python.org's Windows binaries, vcruntime140*.dll)\n    microsoft-distributable-code.txt\n"
+    else:
+        missing.append("the Microsoft Distributable Code clause in python.org's LICENSE.txt (its wording changed: Legal must read it)")
     (stage / "THIRD_PARTY_LICENSES.txt").write_text("See LEGAL_REVIEW.txt for items that need a decision from Legal.\n\n" + index,
                                                     encoding="utf-8")
 
@@ -335,6 +505,7 @@ def build(stage, embed_zip):
         "name": PACKAGE, "version": version, "kind": "embedded", "platform": PLATFORM,
         "python": EMBED_VERSION, "python_tag": PYTHON_TAG, "python_source": EMBED_URL, "python_sha256": EMBED_SHA256,
         "git": git_commit(), "built": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "python_pgp_fingerprint": pgp_fingerprint, "python_pgp_verified": bool(pgp_fingerprint),
         "wheel_count": wheel_count, "uv_lock_sha256": sha256_file(REPO / "uv.lock"),
         "license_sha256": sha256_file(REPO / "LICENSE") if licence_present else None,
         "unsigned_native_modules": unsigned,
@@ -364,14 +535,16 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Build the Windows package with python.org's embeddable Python (no executable of ours).")
     parser.add_argument("--outdir", default=str(REPO / "dist"), help="Output directory (default: dist).")
     parser.add_argument("--embed-zip", help="Use this already downloaded embeddable zip (it is still checked against the pinned SHA-256).")
+    parser.add_argument("--embed-sig", help="The .asc signature that belongs to --embed-zip (default: downloaded from python.org).")
+    parser.add_argument("--skip-pgp", action="store_true", help="Do not check the OpenPGP signature (local experiments only).")
     parser.add_argument("--skip-verify", action="store_true", help="Do not test-install the package on Windows (not for releases).")
     args = parser.parse_args(argv)
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            embed_zip = fetch_embeddable(tmp, args.embed_zip)
+            embed_zip, fingerprint = fetch_embeddable(tmp, args.embed_zip, args.embed_sig, not args.skip_pgp)
             stage = Path(tmp) / "bundle"
             stage.mkdir()
-            info, missing, site_names = build(stage, embed_zip)
+            info, missing, site_names = build(stage, embed_zip, fingerprint)
             verify_layout(stage, site_names)
             if sys.platform == "win32" and not args.skip_verify:
                 verify_install(stage)
@@ -386,6 +559,7 @@ def main(argv=None):
     log("  size:    %.1f MB" % (target.stat().st_size / 1e6))
     log("  sha256:  %s" % digest)
     log("  python:  %s (python.org embeddable)   platform: %s   wheels: %d" % (EMBED_VERSION, PLATFORM, info["wheel_count"]))
+    log("  OpenPGP: " + ("verified, key " + info["python_pgp_fingerprint"] if info["python_pgp_verified"] else "NOT CHECKED"))
     if info["unsigned_native_modules"]:
         log("  unsigned native modules (third-party): " + ", ".join(info["unsigned_native_modules"]))
     if missing:

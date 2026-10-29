@@ -400,7 +400,12 @@ jobs:
       - name: Install the build tool
         run: python -m pip install build
 
-      # Fails, and writes nothing, if the downloaded interpreter differs from the pinned SHA-256, python.exe
+      # gpg checks the interpreter's OpenPGP signature; Git for Windows provides it in this bash shell.
+      - name: Show gpg
+        run: gpg --version | head -n 1
+
+      # Fails, and writes nothing, if the downloaded interpreter differs from the pinned SHA-256 or its OpenPGP
+      # signature does not verify against the pinned key, python.exe
       # does not carry the Python Software Foundation's signature, a package differs from uv.lock, the
       # folder holds a program other than python.exe, or the package does not install and start.
       - name: Build the embedded package
