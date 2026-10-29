@@ -465,6 +465,42 @@ under every Python version it holds) before the workflow succeeds. The per-OS ar
 intermediates. `tests/test_combine.py` covers the combining and the choice of folder; the Windows legs
 have never run (see "Things to know").
 
+### The embedded package (Windows, no executable of ours)
+
+The standalone zip's `diamond-mcp.exe` is an unsigned PyInstaller launcher, which Windows Defender and
+SmartScreen distrust and which strict sites (AppLocker, WDAC) may block. `scripts/build_embedded.py` builds a
+Windows package without one: python.org's **embeddable Python** (3.13.17), which the Python Software Foundation
+has signed, with the packages from `uv.lock` unpacked into its `Lib\site-packages`. The server is
+`python\python.exe -I -m diamond_mcp`; no Python needs to be installed and pip is not included.
+
+```
+python scripts/build_embedded.py --outdir dist      # Windows or Linux; test-installs only on Windows
+```
+
+What the build checks, and stops on: the zip against the SHA-256 pinned in the script (`EMBED_SHA256`, taken
+from a download over https; python.org publishes no hash to compare with); that `python.exe` carries the
+Python Software Foundation's name in its signature block (the signature itself is not validated by the script;
+the workflow's verify job has Windows check it with `Get-AuthenticodeSignature`); each wheel against its SHA-256
+in `uv.lock`; no wheel with scripts; and that the only program in the package is `python.exe` (`pythonw.exe` is
+removed). The `._pth` file is rewritten to the library zip, the folder and `Lib\site-packages`.
+
+The package carries `LEGAL_REVIEW.txt` (the interpreter is unmodified; the notices for the libraries python.org
+builds in are python.org's own list for the release (`Doc/license.rst` and the library versions of its Windows build, copied from the CPython tag into `scripts/python_notices/cpython-3.13.17/`) plus the python-build-standalone texts from `scripts/python_notices/windows-x86_64/`;
+Microsoft's `vcruntime140*.dll` come in python.org's zip; four third-party `.pyd` files are unsigned; the product
+`LICENSE` is a copy), `THIRD_PARTY_LICENSES/` and `BUILDINFO` (`"kind": "embedded"`).
+
+**Which Python.** python.org builds an embeddable zip only for releases that have binaries, and stopped for 3.11 and
+3.12 at 3.11.9 and 3.12.10 (all later patch releases are source only). Shipping those would mean shipping an
+interpreter without the later security fixes, so the build uses 3.13.17. When python.org publishes a newer 3.13 or
+3.14 embeddable, change `EMBED_VERSION` and `EMBED_SHA256` together and check the signature note above.
+
+**The hybrid package.** `combine_installers.py --kind standalone` accepts this zip for Windows together with the
+Linux standalone zip and writes `lattice-diamond-mcp-<version>-hybrid-windows-linux-x86_64.zip`. install.py picks
+the folder for the machine (the embedded Python on Windows, the standalone program on Linux). The workflow builds it
+when `installers` is `both` or `embedded`: jobs `build-embedded`, `verify-embedded`, `combine-hybrid` and
+`verify-combined-hybrid`. Not tested on Windows: nothing here has run there, including the signature check and the
+installed server; the first workflow run is the first test.
+
 ### What the installer does on the target machine
 
 `install.py` reads `BUILDINFO` and refuses a wrong operating system or a too-old glibc. In a combined

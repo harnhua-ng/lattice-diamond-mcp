@@ -15,6 +15,14 @@ name: Build dist
 #               version (the `wheels_python` input) and needs glibc 2.28+ on Linux (Red Hat 8).
 #               Contains no PyInstaller code. Readable source.
 #
+#   EMBEDDED    lattice-diamond-mcp-<version>-embedded-windows-x86_64.zip   (Windows only)
+#               python.org's own embeddable Python 3.13, signed by the Python Software Foundation, with the
+#               locked packages unpacked beside it. NO executable of ours, so nothing for Windows Defender or
+#               SmartScreen to distrust and nothing to sign; the server is `python.exe -I -m diamond_mcp`.
+#               Needs no Python on the machine. Combined with the Linux standalone program as the HYBRID
+#               package below. Built by scripts/build_embedded.py, which runs on any OS but can test the
+#               result only on Windows, so this workflow builds it there.
+#
 # Each zip is built on the operating system it is for: pip and uv resolve for the machine they run
 # on, so a Windows zip built on Linux would silently lack Windows-only dependencies.
 #
@@ -22,6 +30,9 @@ name: Build dist
 #
 #   lattice-diamond-mcp-<version>-standalone-windows-linux-x86_64.zip    (artifact lattice-diamond-mcp-combined-standalone)
 #   lattice-diamond-mcp-<version>-wheels-windows-linux-<cpNN>.zip        (artifact lattice-diamond-mcp-combined-wheels)
+#   lattice-diamond-mcp-<version>-hybrid-windows-linux-x86_64.zip        (artifact lattice-diamond-mcp-combined-hybrid)
+#       = Windows: the embedded package, Linux: the standalone program. For customers whose Windows policy
+#         blocks or distrusts an unsigned .exe and who cannot be asked to install Python.
 #
 # A combined zip has one install.py and one folder per build; install.py picks the folder for the machine
 # it runs on. scripts/combine_installers.py builds it without changing anything inside a build, and
@@ -50,10 +61,10 @@ on:
         required: true
         default: 'main'
       installers:
-        description: 'Which installers to build'
+        description: 'Which installers to build (both = standalone and wheels; embedded = the hybrid package, which also builds the standalone zips)'
         required: false
         type: choice
-        options: [both, standalone, wheels]
+        options: [both, standalone, wheels, embedded]
         default: both
       wheels_python:
         description: 'Python version of the wheels zips (3.11 is the minimum), or `all`'
@@ -355,6 +366,257 @@ jobs:
           exe="$INSTALL_DIR/diamond-mcp"
           if [ -f "$exe.exe" ]; then exe="$exe.exe"; fi
           '${{ steps.checker.outputs.python-path }}' scripts/build_binary.py --smoke-test "$exe"
+
+      - name: Uninstall
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --uninstall --install-dir "$INSTALL_DIR"
+          if [ -e "$INSTALL_DIR" ]; then echo "$INSTALL_DIR is still there" >&2; exit 1; fi
+
+  # ------------------------------------------------------------------------------ embedded (Windows)
+
+  build-embedded:
+    name: Build embedded package (windows-x86_64)
+    if: ${{ inputs.installers == 'both' || inputs.installers == 'embedded' }}
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Set up Python to run the build script
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the build tool
+        run: python -m pip install build
+
+      # Fails, and writes nothing, if the downloaded interpreter differs from the pinned SHA-256, python.exe
+      # does not carry the Python Software Foundation's signature, a package differs from uv.lock, the
+      # folder holds a program other than python.exe, or the package does not install and start.
+      - name: Build the embedded package
+        run: python scripts/build_embedded.py --outdir out
+
+      - name: Upload the embedded package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lattice-diamond-mcp-embedded-windows-x86_64
+          path: |
+            out/lattice-diamond-mcp-*.zip
+            out/lattice-diamond-mcp-*.zip.sha256
+          if-no-files-found: error
+
+  # Installs the package on a fresh Windows runner with an old installer Python (3.8, the oldest
+  # install.py supports), starts the installed server over MCP, and uninstalls.
+  verify-embedded:
+    needs: build-embedded
+    name: Verify embedded package (windows-2022)
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Download the embedded package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lattice-diamond-mcp-embedded-windows-x86_64
+          path: out
+
+      - name: Check the checksum
+        run: cd out && sha256sum -c ./*.zip.sha256
+
+      - name: Unpack
+        run: |
+          mkdir unpacked
+          unzip -q out/lattice-diamond-mcp-*.zip -d unpacked
+          bundle=$(echo "$PWD"/unpacked/*/)
+          test -f "$bundle/install.py" && test -f "$bundle/python/python.exe"
+          # the only program in the package is python.exe
+          others=$(find "$bundle" -iname '*.exe' ! -path "$bundle/python/python.exe" | head -n 1)
+          if [ -n "$others" ]; then echo "unexpected program: $others" >&2; exit 1; fi
+
+      - name: Set up the installer's Python
+        id: installer
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.8'
+
+      - name: Set up Python for the protocol check
+        id: checker
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          native() { cygpath -m "$1"; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          install_dir=$(native "$RUNNER_TEMP/diamond-mcp-python")
+          '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --no-register --install-dir "$install_dir" | tee install.log
+          echo "INSTALL_DIR=$install_dir" >> "$GITHUB_ENV"
+
+      # Windows checks the signature of what it runs: python.exe must verify as signed by the Python Software
+      # Foundation. This is the first place the signature is validated rather than only looked for.
+      - name: Windows reports python.exe as validly signed
+        shell: pwsh
+        run: |
+          $sig = Get-AuthenticodeSignature "$env:INSTALL_DIR\python.exe"
+          $sig | Format-List Status, StatusMessage, @{n='Signer';e={$_.SignerCertificate.Subject}}
+          if ($sig.Status -ne 'Valid') { throw "python.exe signature status: $($sig.Status)" }
+          if ($sig.SignerCertificate.Subject -notmatch 'Python Software Foundation') { throw "unexpected signer" }
+
+      - name: Talk MCP to the installed server
+        run: |
+          '${{ steps.checker.outputs.python-path }}' scripts/build_binary.py --smoke-test "$INSTALL_DIR/python.exe" --smoke-test-args="-I -m diamond_mcp"
+
+      - name: Uninstall
+        run: |
+          native() { cygpath -m "$1"; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --uninstall --install-dir "$INSTALL_DIR"
+          if [ -e "$INSTALL_DIR" ]; then echo "$INSTALL_DIR is still there" >&2; exit 1; fi
+
+  # The hybrid package: the Windows embedded package and the Linux standalone program in one zip.
+  combine-hybrid:
+    needs: [build-standalone, verify-standalone, build-embedded, verify-embedded]
+    if: ${{ !cancelled() && needs.build-standalone.result == 'success' && needs.verify-standalone.result == 'success' && needs.build-embedded.result == 'success' && needs.verify-embedded.result == 'success' }}
+    name: Combine the hybrid package (Windows embedded + Linux standalone)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Download the Windows embedded package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lattice-diamond-mcp-embedded-windows-x86_64
+          path: parts
+
+      - name: Download the Linux standalone program
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lattice-diamond-mcp-standalone-linux-x86_64
+          path: parts
+
+      - name: Check the checksums
+        run: |
+          ls -la parts
+          cd parts && sha256sum -c ./*.zip.sha256
+
+      - name: Combine
+        run: |
+          python scripts/combine_installers.py --kind standalone --outdir out parts/lattice-diamond-mcp-*.zip
+          ls -la out
+
+      - name: Upload the hybrid package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lattice-diamond-mcp-combined-hybrid
+          path: |
+            out/lattice-diamond-mcp-*.zip
+            out/lattice-diamond-mcp-*.zip.sha256
+          if-no-files-found: error
+
+  # Installs the hybrid package on a fresh runner of each operating system: the installer must choose the
+  # right folder (the embedded Python on Windows, the standalone program on Linux), and the server must speak MCP.
+  verify-combined-hybrid:
+    needs: combine-hybrid
+    name: Verify hybrid (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            installer_python: '3.8'
+          - os: windows-2022
+            installer_python: '3.8'
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Download the hybrid package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lattice-diamond-mcp-combined-hybrid
+          path: out
+
+      - name: Check the checksum
+        run: cd out && sha256sum -c ./*.zip.sha256
+
+      - name: Unpack
+        run: |
+          mkdir unpacked
+          unzip -q out/lattice-diamond-mcp-*.zip -d unpacked
+          bundle=$(echo "$PWD"/unpacked/*/)
+          test -f "$bundle/install.py" && test -f "$bundle/windows-x86_64/python/python.exe" && test -f "$bundle/linux-x86_64/diamond-mcp/diamond-mcp"
+
+      - name: Set up the installer's Python
+        id: installer
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.installer_python }}
+
+      - name: Set up Python for the protocol check
+        id: checker
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install with the installer's Python
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          install_dir=$(native "$RUNNER_TEMP/diamond-mcp-hybrid")
+          '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --no-register --install-dir "$install_dir" | tee install.log
+          grep -q "several builds; using the one for ${{ runner.os == 'Windows' && 'windows' || 'linux' }}-x86_64" install.log
+          echo "INSTALL_DIR=$install_dir" >> "$GITHUB_ENV"
+
+      - name: Talk MCP to the installed server
+        run: |
+          if [ -f "$INSTALL_DIR/python.exe" ]; then
+            '${{ steps.checker.outputs.python-path }}' scripts/build_binary.py --smoke-test "$INSTALL_DIR/python.exe" --smoke-test-args="-I -m diamond_mcp"
+          else
+            '${{ steps.checker.outputs.python-path }}' scripts/build_binary.py --smoke-test "$INSTALL_DIR/diamond-mcp"
+          fi
 
       - name: Uninstall
         run: |

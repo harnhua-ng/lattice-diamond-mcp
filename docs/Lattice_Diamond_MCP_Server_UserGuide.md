@@ -271,10 +271,15 @@ the project's build workflow but has never been run, so no Windows zip has been 
    of the server program if a tool dropped it.
 
 **Standalone zip.** The installer copies the `diamond-mcp` folder to `~/diamond-mcp`, checks that
-the program starts, and registers it with Claude Code under the name `diamond`. It touches no
+the program starts, and registers it with Claude Code under the name `lattice-diamond-mcp`. It touches no
 Python installation. **Python-packages zip.** It creates its own environment in
 `%LOCALAPPDATA%\lattice-diamond-mcp\venv` on Windows or `~/.local/share/lattice-diamond-mcp/venv` on Linux, installs the packages from the zip without the network, checks that the
-server starts, and registers it. In both cases you can run it again at any time: it replaces its
+server starts, and registers it. **Windows package with its own Python** (the Windows side of the
+hybrid zip). It copies the `python` folder, which is python.org's Python with the server's packages
+inside it, to `%LOCALAPPDATA%\lattice-diamond-mcp\python`, checks that the server starts, and registers
+`python.exe -I -m diamond_mcp`. The folder contains no program made by Lattice, and `python.exe` is
+signed by the Python Software Foundation, so there is nothing for Windows Defender or SmartScreen to
+distrust. In all cases you can run the installer again at any time: it replaces its
 own folder and does not register twice, and it never touches a folder it did not create.
 
 ### Options
@@ -282,7 +287,7 @@ own folder and does not register twice, and it never touches a folder it did not
 | Option | Purpose |
 |---|---|
 | `--no-register` | Install only. Do not register with Claude Code. |
-| `--install-dir DIR` | Standalone zip: where to install (default `~/diamond-mcp`). |
+| `--install-dir DIR` | Standalone zip: where to install (default `~/diamond-mcp`); Windows package with its own Python: default `%LOCALAPPDATA%\lattice-diamond-mcp\python`. |
 | `--venv-dir DIR` | Python-packages zip: where to create the environment (default: the folder above). |
 | `--python PATH` | Python-packages zip: use this interpreter; it must be the version the zip was built for. |
 | `--diamond-exe PATH` | Store `DIAMOND_EXE` in the Claude Code registration. |

@@ -117,6 +117,14 @@ Numbering is local to this scan. The last column names the corresponding cortex-
   `SHA256SUMS`, each file's hash in `SOURCES.txt`), copied into the zip, and listed in `LEGAL_REVIEW.txt` as item 3.
   The build stops if the interpreter is from a different release. Still open: the Windows set was chosen from the
   DLLs in the release archive, not from a Windows build of this program, and Legal has not reviewed any of it.
+- **Windows package with python.org's Python (new, 2026-10-29).** `scripts/build_embedded.py` builds a Windows package
+  with no executable of ours: python.org's embeddable CPython 3.13.17 (SHA-256 pinned in the script; python.exe
+  carries the Python Software Foundation's signature, found in the signature block but **not validated** on Linux) plus the
+  locked wheels (each checked against `uv.lock`). Built and layout-checked on Linux, **never run on Windows**. Open:
+  four third-party `.pyd` files are unsigned; Microsoft's `vcruntime140*.dll` come in python.org's zip; python.org
+  publishes no checksum for the zip, so the pin is trust-on-first-download; the library notices are python.org's own
+  `Doc/license.rst` for the release plus the python-build-standalone texts; Python 3.11 and 3.12 cannot be used because python.org stopped
+  publishing embeddable builds for them (3.12.10 is the last, missing six later security releases).
 - **The wheels zip carries the `cryptography` wheel** (via the `mcp` dependency), which has OpenSSL linked in, and
   `cffi`, which carries libffi. Their licence files are in `THIRD_PARTY_LICENSES`; the standalone program does not
   contain either package. No wheel for `pip`, `setuptools` or an interpreter is in either zip.

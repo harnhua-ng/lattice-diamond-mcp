@@ -578,7 +578,7 @@ def test_uninstall_targets_follow_the_kind_of_installation(bundle, tmp_path):
     (root / "BUILDINFO").write_text(json.dumps({"kind": "wheels"}))
     assert install.uninstall_targets(args) == [("wheels", install.default_venv_dir()), ("wheels", install.previous_venv_dir())]
     (root / "BUILDINFO").unlink()
-    assert [k for k, _ in install.uninstall_targets(args)] == ["binary", "wheels", "wheels"]  # unknown kind: look at both
+    assert [k for k, _ in install.uninstall_targets(args)] == ["binary", "embedded", "wheels", "wheels"]  # unknown kind: look at both
     explicit = install.parse_args(["--uninstall", "--install-dir", str(tmp_path / "a")])
     assert install.uninstall_targets(explicit) == [("binary", str(tmp_path / "a"))]
 
