@@ -35,10 +35,21 @@ WORKTREE = "WORKTREE"          # --ref default: the working tree, uncommitted ch
 IS_WINDOWS = sys.platform == "win32"
 IS_LINUX = sys.platform.startswith("linux")
 EMBEDDED_GLOB = NAME + "-*-embedded-windows-x86_64.zip"
+LINUX_EMBEDDED_GLOB = NAME + "-*-embedded-linux-x86_64.zip"
 LINUX_GLOB = NAME + "-*-linux-x86_64.zip"
 LICENCE_GAP_MARK = "WARNING: no licence file was found for:"
 
 EPILOG = """
+the embedded packages (the direction this project is going)
+  --combined-embedded builds the Windows package (python.org's signed Python) and the Linux package (python-build-standalone's Python,
+  the interpreter uv uses) and combines them into
+      <outdir>/lattice-diamond-mcp-<version>-embedded-windows-linux-x86_64.zip      + .sha256
+  Neither half contains an executable of ours, and both only download and unpack files, so --combined-embedded and
+  --linux-embedded work on any system; the install test runs for the system the script runs on. --linux-embedded builds the
+  Linux half alone (<outdir>/lattice-diamond-mcp-<version>-embedded-linux-x86_64.zip). --linux-python FILE and --embed-zip FILE use
+  interpreter archives that were downloaded already; both are still checked against the SHA-256 pinned in build_embedded.py.
+  --windows, --linux and --both below are the earlier packages that use the standalone (PyInstaller) Linux program.
+
 what it produces
   One Windows + Linux package for the customer, built from the existing builders (scripts/build_embedded.py,
   scripts/build_binary.py, scripts/combine_installers.py). Nothing here is Python-version specific, so there is
@@ -236,6 +247,18 @@ def build_windows(root, work, args):
     return only_zip(work, EMBEDDED_GLOB, "Windows package")
 
 
+def build_linux_embedded(root, work, args):
+    """The Linux package with python-build-standalone's Python. It only downloads and unpacks files, so it builds on any system."""
+    extra = ["--platform", "linux"]
+    if args.no_verify:
+        extra.append("--skip-verify")
+    if args.linux_python:
+        extra += ["--embed-zip", args.linux_python]
+    out = run_builder(root, "build_embedded.py", work, extra)
+    check_licence_gaps(out, args.allow_license_gaps, "build_embedded.py")
+    return only_zip(work, LINUX_EMBEDDED_GLOB, "Linux embedded package")
+
+
 def build_linux(root, work, args):
     if not IS_LINUX:
         raise ExportError("The Linux program is a PyInstaller build and can be built only on Linux. Build it there and pass it "
@@ -261,7 +284,11 @@ def prebuilt(path, what):
 def combine(root, zips, outdir, label):
     extra = ["--kind", "standalone"] + (["--label", label] if label else [])
     out = run_builder(root, "combine_installers.py", outdir, extra + [str(z) for z in zips])
-    return only_zip(outdir, NAME + "-*-hybrid-windows-linux-*.zip", "combined package")
+    found = sorted(p for pattern in ("-*-embedded-windows-linux-*.zip", "-*-hybrid-windows-linux-*.zip")
+                   for p in Path(outdir).glob(NAME + pattern) if not p.name.endswith(".sha256"))
+    if len(found) != 1:
+        raise ExportError("Expected one combined package in %s, found %d." % (outdir, len(found)))
+    return found[0]
 
 
 # ---------------------------------------------------------------------------
@@ -295,23 +322,26 @@ def licence_fields(text):
 
 
 def embedded_components(zip_path):
-    """CycloneDX components of a Windows package: the interpreter and every package, from its own records."""
+    """CycloneDX components of an embedded package (either system): the interpreter and every package, from its own records."""
     info = json.loads(member_text(zip_path, "BUILDINFO"))
+    platform = info["platform"].split("-")[0]
     licences = licence_fields(member_text(zip_path, "THIRD_PARTY_LICENSES.txt"))
+    windows = platform == "windows"
     components = [{
-        "type": "library", "bom-ref": "pkg:generic/cpython@%s?platform=windows" % info["python"], "name": "cpython",
+        "type": "library", "bom-ref": "pkg:generic/cpython@%s?platform=%s" % (info["python"], platform), "name": "cpython",
         "version": info["python"], "purl": "pkg:generic/cpython@%s?download_url=%s" % (info["python"], info["python_source"]),
         "hashes": [{"alg": "SHA-256", "content": info["python_sha256"]}], "licenses": [{"license": {"id": "Python-2.0"}}],
-        "description": "python.org's embeddable CPython, unmodified (the zip as published, SHA-256 above)",
-        "properties": [{"name": "lattice:platform", "value": "windows"},
+        "description": ("python.org's embeddable CPython, unmodified (the zip as published, SHA-256 above)" if windows else
+                        "python-build-standalone's CPython, unmodified apart from deleted files (the archive's SHA-256 above)"),
+        "properties": [{"name": "lattice:platform", "value": platform},
                        {"name": "lattice:openpgp-fingerprint", "value": str(info.get("python_pgp_fingerprint"))},
                        {"name": "lattice:openpgp-verified", "value": str(bool(info.get("python_pgp_verified"))).lower()}]}]
     for name, version, digest in parse_requirements(member_text(zip_path, "requirements.txt")):
         key = re.sub(r"[-_.]+", "-", name).lower()
         purl = "pkg:pypi/%s@%s" % (key, version)
-        component = {"type": "library", "bom-ref": purl + "?platform=windows", "name": key, "version": version, "purl": purl,
+        component = {"type": "library", "bom-ref": purl + "?platform=" + platform, "name": key, "version": version, "purl": purl,
                      "hashes": [{"alg": "SHA-256", "content": digest}],
-                     "properties": [{"name": "lattice:platform", "value": "windows"}]}
+                     "properties": [{"name": "lattice:platform", "value": platform}]}
         if key in licences:
             component["licenses"] = [{"license": {"name": licences[key]}}]
         components.append(component)
@@ -428,9 +458,14 @@ def verify_zip(zip_path):
             raise ExportError("The finished zip did not install (exit status %d)." % rc)
         if "Integrity: all" not in out:
             say("  [warn] the zip carries no MANIFEST.sha256, so its files were not checked")
-        exe = target / ("python.exe" if (target / "python.exe").exists() else ("diamond-mcp.exe" if IS_WINDOWS else "diamond-mcp"))
-        extra = ["--smoke-test-args=-I -m diamond_mcp"] if exe.name == "python.exe" else []
-        rc, out = run([sys.executable, SCRIPTS_DIR / "build_binary.py", "--smoke-test", exe] + extra, env=env)
+        bundled = sorted(p for p in (target / "bin").glob("python3.*") if p.is_file() and not p.is_symlink()) if (target / "bin").is_dir() else []
+        if (target / "python.exe").exists() or bundled:
+            exe = target / "python.exe" if (target / "python.exe").exists() else bundled[0]
+            smoke = [sys.executable, SCRIPTS_DIR / "smoke_test.py", exe, "--args=-I -m diamond_mcp"]
+        else:                                          # the standalone (PyInstaller) program, until it is removed
+            exe = target / ("diamond-mcp.exe" if IS_WINDOWS else "diamond-mcp")
+            smoke = [sys.executable, SCRIPTS_DIR / "smoke_test.py", exe]
+        rc, out = run(smoke, env=env)
         if rc != 0:
             raise ExportError("The installed server did not answer over MCP.")
         say("  installed with install.py, manifest checked, and the server answered over MCP")
@@ -457,17 +492,20 @@ def build_all(args):
         work.mkdir()
         windows = prebuilt(args.windows_zip, "--windows-zip") if args.windows_zip else None
         linux = prebuilt(args.linux_zip, "--linux-zip") if args.linux_zip else None
-        if args.which in ("windows", "both") and windows is None:
+        if args.which in ("windows", "both", "combined-embedded") and windows is None:
             windows = build_windows(root, work, args)
         if args.which in ("linux", "both") and linux is None:
             linux = build_linux(root, work, args)
+        if args.which in ("linux-embedded", "combined-embedded") and linux is None:
+            linux = build_linux_embedded(root, work, args)
 
         finals = []
-        if args.which == "both":
+        if args.which in ("both", "combined-embedded"):
             final = combine(root, [windows, linux], outdir, args.label)
-            finals.append((final, [("windows", windows), ("linux", linux)]))
+            finals.append((final, [("windows", windows), ("linux" if args.which == "both" else "linux-embedded", linux)]))
         else:
-            kind, source = ("windows", windows) if args.which == "windows" else ("linux", linux)
+            kind, source = {"windows": ("windows", windows), "linux": ("linux", linux),
+                            "linux-embedded": ("linux-embedded", linux)}[args.which]
             target = outdir / source.name
             if source.resolve() != target.resolve():
                 shutil.copyfile(source, target)
@@ -502,6 +540,8 @@ def main():
     p.add_argument("--windows-zip", metavar="FILE", help="use this Windows package instead of building one (with --both)")
     p.add_argument("--linux-zip", metavar="FILE", help="use this Linux program zip instead of building one (with --both); "
                                                        "needed on Windows, where it cannot be built")
+    p.add_argument("--linux-python", metavar="FILE", help="Linux embedded package: use this already downloaded python-build-standalone "
+                                                         ".tar.gz (still checked against its pinned SHA-256)")
     p.add_argument("--embed-zip", metavar="FILE", help="Windows: use this already downloaded python.org embeddable zip "
                                                        "(still checked against its pinned SHA-256)")
     p.add_argument("--embed-sig", metavar="FILE", help="Windows: the .asc that belongs to --embed-zip")
@@ -514,6 +554,11 @@ def main():
                        help="build the Linux standalone program (Linux only)")
     which.add_argument("--both", dest="which", action="store_const", const="both",
                        help="build both and combine them into the hybrid package")
+    which.add_argument("--linux-embedded", dest="which", action="store_const", const="linux-embedded",
+                       help="build the Linux package with python-build-standalone's Python and no executable of ours (any system)")
+    which.add_argument("--combined-embedded", dest="which", action="store_const", const="combined-embedded",
+                       help="build the Windows package and the Linux embedded package and combine them into the combined-embedded package "
+                            "(any system)")
     p.add_argument("--label", default="", metavar="TEXT",
                    type=lambda s: s if re.fullmatch(r"[A-Za-z0-9_.]*", s) else p.error("--label may contain only letters, digits, _ and ."),
                    help="append -TEXT to the zip names, after the version")
@@ -523,13 +568,15 @@ def main():
                    help="warn instead of failing when a package has no licence text (local builds only; never for a release)")
     args = p.parse_args()
 
-    if args.which != "both" and (args.windows_zip or args.linux_zip):
-        p.error("--windows-zip and --linux-zip are for --both, which combines them")
+    if args.which not in ("both", "combined-embedded") and (args.windows_zip or args.linux_zip):
+        p.error("--windows-zip and --linux-zip are for --both and --combined-embedded, which combine them")
+    if args.linux_python and args.which not in ("linux-embedded", "combined-embedded"):
+        p.error("--linux-python is for the Linux embedded package (--linux-embedded or --combined-embedded)")
     if args.which == "both" and not args.linux_zip and not IS_LINUX:
         p.error("the Linux program can be built only on Linux; pass the one built there with --linux-zip")
     if args.which == "linux" and not IS_LINUX:
         p.error("--linux needs a Linux machine (the program is a PyInstaller build)")
-    if (args.embed_zip or args.embed_sig or args.skip_pgp) and args.which == "linux":
+    if (args.embed_zip or args.embed_sig or args.skip_pgp) and args.which in ("linux", "linux-embedded"):
         p.error("--embed-zip, --embed-sig and --skip-pgp are for the Windows package")
     try:
         results = build_all(args)

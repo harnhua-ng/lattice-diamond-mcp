@@ -130,6 +130,11 @@ Numbering is local to this scan. The last column names the corresponding cortex-
   `Doc/license.rst` for the release plus the python-build-standalone texts; the interpreter is deliberately 3.12.10, the last 3.12 with a python.org embeddable zip, so it lacks the fixes of the six later
   source-only 3.12 releases (3.12.11 to 3.12.16), which cannot be had as Windows binaries from python.org; a dated move to 3.13/3.14 is
   proposed (python.org already publishes 3.13.18 as source only).
+- **Linux package with python-build-standalone's Python (new, 2026-10-30).** `scripts/build_embedded.py --platform linux` builds the Linux
+  twin of the Windows package: CPython 3.12.10 from python-build-standalone release 20250529 (SHA-256 pinned from the release's
+  `SHA256SUMS`; **no signature is published, so there is no OpenPGP check**) with the locked wheels, no executable of ours and no symbolic
+  links. Three ELF files; the highest glibc symbol is 2.17. Built here on Linux and install-tested with the real server over MCP; **never run
+  on the GitHub runners**. The interpreter links the system glibc, so "no system dependency" is not true; the floor is glibc 2.17.
 - **The wheels zip carries the `cryptography` wheel** (via the `mcp` dependency), which has OpenSSL linked in, and
   `cffi`, which carries libffi. Their licence files are in `THIRD_PARTY_LICENSES`; the standalone program does not
   contain either package. No wheel for `pip`, `setuptools` or an interpreter is in either zip.

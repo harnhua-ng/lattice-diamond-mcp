@@ -400,10 +400,25 @@ def test_the_pinned_download_is_a_python_org_https_url_for_the_same_version():
 
 # ------------------------------------------------------------------------ installer
 
+PROGRAM = None if os.name == "nt" else "bin/python3.12"      # where the running system's bundled interpreter lives
+
+
+def embedded_info(**extra):
+    info = {"version": "0.1.0", "python": "3.12.10"}
+    if PROGRAM:
+        info["program"] = PROGRAM
+    info.update(extra)
+    return info
+
+
+def embedded_exe(root):
+    return Path(root) / (PROGRAM or "python.exe")
+
+
 def embedded_source(folder, script="#!/bin/sh\necho diamond-mcp usage\n"):
     source = folder / "python"
-    source.mkdir(parents=True)
-    exe = source / "python.exe"
+    exe = embedded_exe(source)
+    exe.parent.mkdir(parents=True)
     exe.write_text(script)
     exe.chmod(0o755)
     (source / "python312._pth").write_text("x")
@@ -414,8 +429,8 @@ def embedded_source(folder, script="#!/bin/sh\necho diamond-mcp usage\n"):
 def test_embedded_install_copies_checks_and_marks_the_folder(tmp_path):
     embedded_source(tmp_path / "zip")
     args = install.parse_args(["--install-dir", str(tmp_path / "target")])
-    python = install.install_embedded_bundle(args, {"version": "0.1.0", "python": "3.12.10"}, str(tmp_path / "zip"))
-    assert python == str(tmp_path / "target" / "python.exe")
+    python = install.install_embedded_bundle(args, embedded_info(), str(tmp_path / "zip"))
+    assert python == str(embedded_exe(tmp_path / "target"))
     assert (tmp_path / "target" / install.MARKER).exists() and (tmp_path / "target" / "python312._pth").exists()
 
 
@@ -426,33 +441,34 @@ def test_embedded_install_refuses_a_foreign_folder_and_a_server_that_does_not_st
     (tmp_path / "foreign" / "mine.txt").write_text("keep")
     args = install.parse_args(["--install-dir", str(tmp_path / "foreign")])
     with pytest.raises(install.InstallError, match="not created by this installer"):
-        install.install_embedded_bundle(args, {"version": "0.1.0"}, str(tmp_path / "zip"))
+        install.install_embedded_bundle(args, embedded_info(), str(tmp_path / "zip"))
     assert (tmp_path / "foreign" / "mine.txt").read_text() == "keep"
     broken = tmp_path / "broken"
     embedded_source(broken, "#!/bin/sh\necho something else\n")
     with pytest.raises(install.InstallError, match="did not behave"):
-        install.install_embedded_bundle(install.parse_args(["--install-dir", str(tmp_path / "t2")]), {"version": "0.1.0"}, str(broken))
+        install.install_embedded_bundle(install.parse_args(["--install-dir", str(tmp_path / "t2")]), embedded_info(), str(broken))
 
 
 @posix_only
 def test_embedded_install_runs_the_server_module_in_isolated_mode(tmp_path):
     log = tmp_path / "argv.txt"
     embedded_source(tmp_path / "zip", '#!/bin/sh\necho "$@" > %s\necho diamond-mcp\n' % log)
-    install.install_embedded_bundle(install.parse_args(["--install-dir", str(tmp_path / "t")]), {"version": "0.1.0"}, str(tmp_path / "zip"))
+    install.install_embedded_bundle(install.parse_args(["--install-dir", str(tmp_path / "t")]), embedded_info(), str(tmp_path / "zip"))
     assert log.read_text().split() == ["-I", "-m", "diamond_mcp", "--help"]
 
 
 def test_a_dry_run_changes_nothing(tmp_path):
     embedded_source(tmp_path / "zip")
     args = install.parse_args(["--dry-run", "--install-dir", str(tmp_path / "target")])
-    python = install.install_embedded_bundle(args, {"version": "0.1.0"}, str(tmp_path / "zip"))
-    assert python.endswith("python.exe") and not (tmp_path / "target").exists()
+    python = install.install_embedded_bundle(args, embedded_info(), str(tmp_path / "zip"))
+    assert python.endswith(PROGRAM or "python.exe") and not (tmp_path / "target").exists()
 
 
 def test_uninstall_recognises_an_embedded_folder_given_with_install_dir(tmp_path):
     folder = tmp_path / "t"
     folder.mkdir()
-    (folder / "python.exe").write_text("x")
+    embedded_exe(folder).parent.mkdir(parents=True, exist_ok=True)
+    embedded_exe(folder).write_text("x")
     assert install.uninstall_targets(install.parse_args(["--uninstall", "--install-dir", str(folder)])) == [("embedded", str(folder))]
     (folder / "diamond-mcp").write_text("x") if os.name != "nt" else (folder / "diamond-mcp.exe").write_text("x")
     assert install.uninstall_targets(install.parse_args(["--uninstall", "--install-dir", str(folder)]))[0][0] == "binary"
@@ -500,10 +516,24 @@ def test_a_windows_embedded_zip_and_a_linux_standalone_zip_become_a_hybrid_packa
     assert "no program of ours" in index
 
 
-def test_an_embedded_package_for_linux_is_refused(tmp_path):
+def test_an_embedded_package_for_each_system_becomes_the_combined_embedded_package(tmp_path):
     (tmp_path / "in").mkdir()
-    zips = [make_zip(tmp_path / "in", "windows-x86_64", "binary"), make_zip(tmp_path / "in", "linux-x86_64", "embedded")]
-    assert combine.main(["--kind", "standalone", "--outdir", str(tmp_path / "out")] + [str(z) for z in zips]) == 1
+    zips = [make_zip(tmp_path / "in", "windows-x86_64", "embedded"), make_zip(tmp_path / "in", "linux-x86_64", "embedded")]
+    assert combine.main(["--kind", "embedded", "--outdir", str(tmp_path / "out")] + [str(z) for z in zips]) == 0
+    target = tmp_path / "out" / "lattice-diamond-mcp-0.1.0-embedded-windows-linux-x86_64.zip"
+    with zipfile.ZipFile(target) as archive:
+        names = set(archive.namelist())
+        index = archive.read("lattice-diamond-mcp-0.1.0/PACKAGES.txt").decode()
+    assert "lattice-diamond-mcp-0.1.0/windows-x86_64/BUILDINFO" in names and "lattice-diamond-mcp-0.1.0/linux-x86_64/BUILDINFO" in names
+    assert "python.org Python 3.12.10" in index and "python-build-standalone Python 3.12.10" in index
+
+
+def test_two_zips_for_the_same_system_are_refused(tmp_path):
+    (tmp_path / "in").mkdir()
+    a = make_zip(tmp_path / "in", "windows-x86_64", "embedded")
+    b = tmp_path / "in" / "again.zip"
+    b.write_bytes(a.read_bytes())
+    assert combine.main(["--kind", "embedded", "--outdir", str(tmp_path / "out"), str(a), str(b)]) == 1
 
 
 def test_a_wheels_zip_still_cannot_be_combined_as_standalone(tmp_path):
@@ -721,7 +751,7 @@ def test_a_server_that_appears_before_the_move_gets_the_same_stop_or_wait_questi
     args = install.parse_args(["--install-dir", str(tmp_path / "target")])
     assert install.place_folder(args, str(tmp_path / "zip" / "python"), str(tmp_path / "target")) is True
     assert asked == [str(tmp_path / "target")] and len(calls) == 2
-    assert (tmp_path / "target" / "python.exe").exists() and (tmp_path / "target" / install.MARKER).exists()
+    assert embedded_exe(tmp_path / "target").exists() and (tmp_path / "target" / install.MARKER).exists()
 
 
 def test_a_holder_that_is_still_there_after_the_question_is_named_in_the_error(tmp_path, monkeypatch):

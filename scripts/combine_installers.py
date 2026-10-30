@@ -4,12 +4,13 @@
 """
 Combine the per-operating-system installer zips into one zip per kind.
 
-    python scripts/combine_installers.py --kind standalone --outdir out  lattice-diamond-mcp-*-windows-*.zip  lattice-diamond-mcp-*-linux-*.zip
+    python scripts/combine_installers.py --kind embedded --outdir out  lattice-diamond-mcp-*-embedded-windows-*.zip  lattice-diamond-mcp-*-embedded-linux-*.zip
     python scripts/combine_installers.py --kind wheels     --outdir out  <wheels zips of both systems, one per Python version>
 
-Each input is a zip written by build_binary.py (standalone), build_embedded.py (Windows, python.org's Python
-with the packages and no program of ours; combined with the Linux standalone program as "hybrid") or
-build_installer.py (wheels). The result:
+Each input is a zip written by build_embedded.py (a bundled Python with the packages and no program of ours:
+python.org's for Windows, python-build-standalone's for Linux; two of them make the "embedded" combined package),
+build_binary.py (the standalone PyInstaller program; with one embedded zip it makes a "hybrid") or build_installer.py
+(wheels). The result:
 
     lattice-diamond-mcp-<version>/
         install.py              one installer for all builds; it picks the folder that fits the machine
@@ -39,7 +40,7 @@ from pathlib import Path
 
 PACKAGE = "lattice-diamond-mcp"
 OS_ORDER = ("windows", "linux")
-STANDALONE_KINDS = ("binary", "embedded")   # one folder per operating system, no Python needed; embedded is Windows only
+STANDALONE_KINDS = ("binary", "embedded")   # one folder per operating system, no Python needed on the machine
 
 
 class CombineError(Exception):
@@ -101,9 +102,6 @@ def check_compatible(bundles):
             raise CombineError("%s and %s carry different install.py files (SHA-256 %s and %s).%s" % (
                 Path(first_path).name, Path(path).name, hashlib.sha256(first_installer).hexdigest()[:12],
                 hashlib.sha256(installer).hexdigest()[:12], hint))
-    for path, _, info, _ in bundles:
-        if info.get("kind") == "embedded" and not info.get("platform", "").startswith("windows"):
-            raise CombineError("%s is a bundled-Python package, which exists for Windows only." % Path(path).name)
     seen = {}
     for path, _, info, _ in bundles:
         name = folder_name(info)
@@ -121,8 +119,10 @@ def check_compatible(bundles):
 def output_name(bundles, label=""):
     infos = [info for _, _, info, _ in bundles]
     kind = "standalone" if infos[0].get("kind") in STANDALONE_KINDS else "wheels"
-    if any(i.get("kind") == "embedded" for i in infos):
-        kind = "hybrid"   # Windows: python.org's Python with the packages, no program of ours; Linux: the standalone program
+    if infos[0].get("kind") in STANDALONE_KINDS and all(i.get("kind") == "embedded" for i in infos):
+        kind = "embedded"   # a bundled Python with the packages for each operating system, no program of ours
+    elif any(i.get("kind") == "embedded" for i in infos):
+        kind = "hybrid"     # an embedded Python for one system and the standalone (PyInstaller) program for the other
     operating_systems = [name for name in OS_ORDER if any(i["platform"].startswith(name) for i in infos)]
     parts = [PACKAGE, infos[0]["version"] + label, kind, "-".join(operating_systems)]
     if kind == "wheels":
@@ -142,7 +142,8 @@ def index_text(bundles, name):
     for _, _, info, _ in sorted(bundles, key=lambda b: folder_name(b[2])):
         detail = ["platform " + info["platform"]]
         if info.get("kind") == "embedded":
-            detail.append("python.org Python %s with the packages; no program of ours" % info.get("python", "?"))
+            source = "python.org" if info["platform"].startswith("windows") else "python-build-standalone"
+            detail.append("%s Python %s with the packages; no program of ours" % (source, info.get("python", "?")))
         elif info.get("kind") != "binary":
             detail.append("Python " + info.get("python", "?"))
         if info.get("min_glibc"):
@@ -201,7 +202,7 @@ def write_combined(bundles, outdir, label=""):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Combine per-operating-system installer zips into one zip.")
     parser.add_argument("zips", nargs="+", help="the per-platform zips to combine")
-    parser.add_argument("--kind", required=True, choices=("standalone", "wheels"), help="what the inputs are")
+    parser.add_argument("--kind", required=True, choices=("embedded", "standalone", "wheels"), help="what the inputs are (embedded is the same as standalone: one folder per operating system)")
     parser.add_argument("--outdir", default="dist", help="where to write the combined zip (default: dist)")
     parser.add_argument("--label", default="", type=lambda text: text if re.fullmatch(r"[A-Za-z0-9_.]*", text) else
                         parser.error("--label may contain only letters, digits, _ and ."),
@@ -212,7 +213,7 @@ def main(argv=None):
         for path in args.zips:
             root, info, installer = read_bundle(path)
             standalone = info.get("kind") in STANDALONE_KINDS
-            if standalone != (args.kind == "standalone"):
+            if standalone != (args.kind in ("standalone", "embedded")):
                 raise CombineError("%s is a %s zip, not a %s zip." % (Path(path).name, "standalone" if standalone else "wheels", args.kind))
             bundles.append((path, root, info, installer))
         check_compatible(bundles)

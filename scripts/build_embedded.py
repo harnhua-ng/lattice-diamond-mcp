@@ -41,6 +41,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 import zipfile
@@ -211,7 +212,7 @@ def unpack_interpreter(embed_zip, dest):
         for name in archive.namelist():
             if name.startswith("/") or ".." in PurePosixPath(name).parts:
                 raise BuildError("The embeddable zip holds an unsafe path: %s" % name)
-        archive.extractall(dest)
+        archive.extractall(dest)  # nosec B202 - every member name was checked above
     exes = sorted(p.name for p in dest.rglob("*.exe"))
     if "python.exe" not in exes:
         raise BuildError("The embeddable zip has no python.exe.")
@@ -314,15 +315,15 @@ def check_closure(wheels, environment, exempt=()):
             "%s (required by %s)" % (name, ", ".join(sorted(users))) for name, users in sorted(missing.items())))
 
 
-def download_wheels(wheels, own):
+def download_wheels(wheels, own, tags=("win_amd64",), environment=None, label="Windows"):
     locked = load_lock(REPO / "uv.lock")
-    log("Downloading the Windows wheels for Python %s at the versions in uv.lock ..." % ".".join(EMBED_VERSION.split(".")[:2]))
-    environment = windows_marker_environment()
+    log("Downloading the %s wheels for Python %s at the versions in uv.lock ..." % (label, ".".join(EMBED_VERSION.split(".")[:2])))
+    environment = environment or windows_marker_environment()
     with tempfile.TemporaryDirectory() as tmp:
         constraints = Path(tmp) / "locked.txt"
         constraints.write_text(lock_constraints_text(locked), encoding="utf-8")
         run([sys.executable, "-c", PIP_AS_TARGET, json.dumps(environment), "download", "--only-binary=:all:",
-             "--platform", "win_amd64", "--python-version", ".".join(EMBED_VERSION.split(".")[:2]), "--implementation", "cp",
+             *sum((["--platform", tag] for tag in tags), []), "--python-version", ".".join(EMBED_VERSION.split(".")[:2]), "--implementation", "cp",
              "--abi", PYTHON_TAG, "--abi", "abi3", "--abi", "none", "--dest", str(wheels),
              "--disable-pip-version-check", "-c", str(constraints), str(own)])
     check_wheels_against_lock(wheels, locked, own.name.split("-")[0] + "-")
@@ -430,7 +431,7 @@ def unpack_wheels(wheels, site_packages):
     A wheel's `<name>-<version>.data/` folder is laid out by install scheme: purelib and platlib go into site-packages
     (what pip does); scripts are NOT installed (they would be programs, and none is needed: pywin32's two are a post-install
     helper and a test runner); anything else (headers, data, include) is refused so nothing is dropped unnoticed."""
-    site_packages.mkdir(parents=True)
+    site_packages.mkdir(parents=True, exist_ok=True)
     skipped = []
     for wheel in sorted(wheels.glob("*.whl")):
         with zipfile.ZipFile(wheel) as archive:
@@ -498,9 +499,23 @@ def signer_of(path):
     return "signed (other)"
 
 
-def native_inventory(stage):
-    """Rows (path relative to the package, signer, SHA-256) for every program, DLL and extension module in it."""
+def is_elf(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+def native_inventory(stage, platform=PLATFORM):
+    """Rows (path relative to the package, signer, SHA-256) for every program, DLL and extension module in it.
+    On Linux every ELF file is listed and the signer is "not applicable": Linux has no equivalent of Authenticode."""
     rows = []
+    if platform.startswith("linux"):
+        for path in sorted(stage.rglob("*")):
+            if path.is_file() and not path.is_symlink() and is_elf(path):
+                rows.append((path.relative_to(stage).as_posix(), "not applicable (Linux)", sha256_file(path)))
+        return rows
     for path in sorted(stage.rglob("*")):
         if path.is_file() and path.suffix.lower() in (".exe", ".dll", ".pyd"):
             rows.append((path.relative_to(stage).as_posix(), signer_of(path), sha256_file(path)))
@@ -508,12 +523,16 @@ def native_inventory(stage):
 
 
 def inventory_text(rows):
-    lines = ["Every program, DLL and extension module in this package, with who signed it.", "",
-             "The signer is read from the names in the file's signature block; the signature itself is not validated by the",
-             "build (Windows does that when the file is run). 'unsigned' files have no signature at all.", ""]
+    linux = bool(rows) and all(r[1].startswith("not applicable") for r in rows)
+    lines = (["Every ELF program and shared library in this package. Linux has no code-signing check like Windows'",
+              "Authenticode, so there is no signer to list; the SHA-256 of each file is in this list and in MANIFEST.sha256.", ""]
+             if linux else
+             ["Every program, DLL and extension module in this package, with who signed it.", "",
+              "The signer is read from the names in the file's signature block; the signature itself is not validated by the",
+              "build (Windows does that when the file is run). 'unsigned' files have no signature at all.", ""])
     width = max(len(r[0]) for r in rows) if rows else 10
     for path, signer, digest in rows:
-        lines.append("%-*s  %-27s %s" % (width, path, signer, digest))
+        lines.append(("%-*s  %s" % (width, path, digest)) if linux else ("%-*s  %-27s %s" % (width, path, signer, digest)))
     counts = {}
     for _, signer, _ in rows:
         counts[signer] = counts.get(signer, 0) + 1
@@ -655,9 +674,9 @@ def collect_python_org_notices(out_dir, notices_dir=None):
     return [p.name for p in files]
 
 
-def collect_notices(out_dir, notices_dir=None):
-    """Copy the library notices into out_dir; return their file names."""
-    folder = (notices_dir or NOTICES_DIR) / PLATFORM
+def collect_notices(out_dir, notices_dir=None, platform=PLATFORM):
+    """Copy the library notices of `platform` into out_dir; return their file names."""
+    folder = (notices_dir or NOTICES_DIR) / platform
     files = sorted(folder.glob("LICENSE.*.txt")) if folder.is_dir() else []
     out_dir.mkdir(parents=True, exist_ok=True)
     for path in files:
@@ -693,6 +712,261 @@ def verify_install(stage):
         if "OK: lattice-diamond-mcp" not in out:
             raise BuildError("The throwaway install did not report success:\n" + out)
     log("  install verified")
+
+
+# ------------------------------------------------------------------------ Linux (python-build-standalone)
+
+LINUX_PLATFORM = "linux-x86_64"
+PBS_RELEASE = "20250529"          # the python-build-standalone release that uv 0.13.5 selects for CPython 3.12.10
+PBS_ARCHIVE = "cpython-%s+%s-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz" % (EMBED_VERSION, PBS_RELEASE)
+PBS_URL = "https://github.com/astral-sh/python-build-standalone/releases/download/%s/%s" % (PBS_RELEASE, PBS_ARCHIVE.replace("+", "%2B"))
+PBS_SHA256 = "f50d08e0304b15d752b22932047135c1dc02f81977b284e51288be9d90627bca"   # from the release's SHA256SUMS
+LINUX_TAGS = ("manylinux_2_17_x86_64", "manylinux2014_x86_64")
+LINUX_MAX_GLIBC = (2, 17)         # Red Hat 7; the build fails if a file in the package needs a newer glibc
+MINOR = ".".join(EMBED_VERSION.split(".")[:2])
+LINUX_PROGRAM = "bin/python" + MINOR
+GLIBC_RE = re.compile(r"GLIBC_(\d+)\.(\d+)")
+# What python-build-standalone's `install_only_stripped` archive holds that this package does not need, relative to python/:
+# headers, man pages and terminfo, Tcl/Tk and IDLE, pip, the test suite, the build helpers, the shared libpython (the
+# interpreter is linked statically, so it is not used) and every symbolic link (the zip format cannot carry them well, and
+# bin/python3.12 is the only program started).
+LINUX_REMOVE = ("include", "share", "lib/pkgconfig", "lib/tcl*", "lib/tk*", "lib/Tix*", "lib/itcl*", "lib/thread*", "lib/libtcl*",
+                "lib/libtk*", "lib/libpython3*",
+                "lib/python%s/ensurepip" % MINOR, "lib/python%s/idlelib" % MINOR, "lib/python%s/test" % MINOR,
+                "lib/python%s/tkinter" % MINOR, "lib/python%s/turtledemo" % MINOR, "lib/python%s/turtle.py" % MINOR,
+                "lib/python%s/lib2to3" % MINOR, "lib/python%s/pydoc_data" % MINOR, "lib/python%s/config-*" % MINOR,
+                "lib/python%s/lib-dynload/*" % MINOR, "lib/python%s/site-packages/*" % MINOR)
+
+
+def linux_marker_environment():
+    return {"sys_platform": "linux", "platform_system": "Linux", "os_name": "posix", "platform_machine": "x86_64",
+            "platform_python_implementation": "CPython", "implementation_name": "cpython", "python_version": MINOR,
+            "python_full_version": EMBED_VERSION, "implementation_version": EMBED_VERSION, "platform_release": "", "platform_version": ""}
+
+
+def fetch_pbs(workdir, given=None):
+    """Return the path of the python-build-standalone archive, checked against the pinned SHA-256."""
+    target = Path(given) if given else Path(workdir) / PBS_ARCHIVE
+    if not given:
+        log("Downloading %s ..." % PBS_URL)
+        download(PBS_URL, target)
+    digest = sha256_file(target)
+    if digest != PBS_SHA256:
+        raise BuildError("%s has SHA-256 %s, expected %s. The release asset may have been replaced, or the download was altered; "
+                         "nothing was built." % (target.name, digest, PBS_SHA256))
+    return target
+
+
+def unpack_pbs(archive_path, dest):
+    """Unpack the archive's python/ folder into `dest`, leaving out symbolic links and hard links, and trim it."""
+    dest.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive_path, "r:gz") as tar:
+        for member in tar:
+            parts = PurePosixPath(member.name).parts
+            if not parts or parts[0] != "python" or member.name.startswith("/") or ".." in parts:
+                raise BuildError("The python-build-standalone archive holds an unexpected path: %s" % member.name)
+            if member.issym() or member.islnk() or len(parts) == 1:
+                continue
+            target = dest.joinpath(*parts[1:])
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+            elif member.isfile():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(member) as source, open(target, "wb") as sink:
+                    shutil.copyfileobj(source, sink)
+                os.chmod(target, 0o755 if member.mode & 0o111 else 0o644)
+            else:
+                raise BuildError("The python-build-standalone archive holds a member of an unsupported type: %s" % member.name)
+    return trim_pbs(dest)
+
+
+def trim_pbs(root):
+    """Delete what LINUX_REMOVE lists and every program in bin/ but the interpreter. Returns the paths removed."""
+    import glob
+    removed = []
+    for pattern in LINUX_REMOVE:
+        for path in sorted(glob.glob(str(root / pattern))):
+            path = Path(path)
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            removed.append(path.relative_to(root).as_posix())
+    bin_dir = root / "bin"
+    if not (bin_dir / ("python" + MINOR)).is_file():
+        raise BuildError("The python-build-standalone archive has no %s; its layout has changed." % LINUX_PROGRAM)
+    for path in sorted(bin_dir.iterdir()):
+        if path.name != "python" + MINOR:
+            path.unlink()
+            removed.append(path.relative_to(root).as_posix())
+    return removed
+
+
+def parse_glibc_requirement(objdump_output):
+    """Highest GLIBC_x.y symbol version named in `objdump -T` output, or None."""
+    versions = [(int(m.group(1)), int(m.group(2))) for m in GLIBC_RE.finditer(objdump_output)]
+    return max(versions) if versions else None
+
+
+def glibc_floor(tree, limit=LINUX_MAX_GLIBC):
+    """The highest glibc any ELF file under `tree` needs. BuildError if that is newer than `limit`."""
+    if shutil.which("objdump") is None:
+        raise BuildError("objdump (binutils) is required to check glibc requirements.")
+    report = {}
+    for path in sorted(Path(tree).rglob("*")):
+        if path.is_file() and not path.is_symlink() and is_elf(path):
+            result = subprocess.run(["objdump", "-T", str(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            need = parse_glibc_requirement(result.stdout)
+            if need:
+                report[path.relative_to(tree).as_posix()] = need
+    offenders = {name: need for name, need in report.items() if need > limit}
+    if offenders:
+        raise BuildError("These files need glibc newer than %d.%d, so the package would not start on the oldest supported systems:\n%s"
+                         % (limit + ("\n".join("  glibc %d.%d  %s" % (need + (name,)) for name, need in sorted(offenders.items(), key=lambda kv: kv[1], reverse=True)),)))
+    return max(report.values()) if report else None
+
+
+def verify_layout_linux(stage, site_names):
+    """Checks that need nothing but files. BuildError on the first problem."""
+    python = stage / "python"
+    programs = sorted(p.relative_to(python).as_posix() for p in (python / "bin").iterdir())
+    if programs != [LINUX_PROGRAM]:
+        raise BuildError("The package must hold no program but %s in bin/; found: %s" % (LINUX_PROGRAM, ", ".join(programs) or "nothing"))
+    if not os.access(python / LINUX_PROGRAM, os.X_OK):
+        raise BuildError("%s is not executable." % LINUX_PROGRAM)
+    links = [p.relative_to(stage).as_posix() for p in stage.rglob("*") if p.is_symlink()]
+    if links:
+        raise BuildError("The package must hold no symbolic links; found: %s" % ", ".join(links[:5]))
+    site = python / "lib" / ("python" + MINOR) / "site-packages"
+    for name in site_names:
+        if not (site / name).exists():
+            raise BuildError("Expected %s in site-packages, but it is missing." % name)
+    if not list(site.glob("lattice_diamond_mcp-*.dist-info")):
+        raise BuildError("The project's own package is not in site-packages.")
+    if (site / "pip").exists() or list(site.glob("pip-*")):
+        raise BuildError("pip must not be in the package.")
+
+
+def linux_legal_review_text(*, version, embedded_notices, native_files, removed, omitted_packages, floor):
+    lines = [
+        "Items for Legal review - %s %s (%s, python-build-standalone Python)" % (PACKAGE, version, LINUX_PLATFORM),
+        "",
+        "Written by scripts/build_embedded.py. These are facts found in this build, not legal conclusions.",
+        "",
+        "1. The interpreter is python-build-standalone's CPython, unmodified except for deleted files",
+        "",
+        "   python/ holds CPython %s from %s" % (EMBED_VERSION, PBS_URL),
+        "   (SHA-256 %s, release %s; the project is https://github.com/astral-sh/python-build-standalone)." % (PBS_SHA256, PBS_RELEASE),
+        "   %d files and folders of the archive were deleted (pip, Tcl/Tk, IDLE, the test suite, headers, the shared libpython, every" % len(removed),
+        "   symbolic link and every program in bin/ but python%s); no file was changed. pip is not in the package and no" % MINOR,
+        "   executable of ours is. CPython is under the PSF licence (THIRD_PARTY_LICENSES/cpython-%s/LICENSE.txt)." % EMBED_VERSION,
+        "   Integrity: the archive is checked against a SHA-256 pinned in the build, taken from the release's SHA256SUMS.",
+        "   python-build-standalone publishes no signature, so unlike the Windows interpreter there is no OpenPGP check.",
+        "",
+        "2. Notices for the libraries compiled into the interpreter",
+        "",
+        "   OpenSSL, zlib, expat, bzip2, liblzma, mpdecimal, libedit, ncurses, libffi, libuuid and SQLite are built into it. The notices",
+        "   python-build-standalone publishes for release %s are copied unchanged from scripts/python_notices/linux-x86_64/" % PBS_RELEASE,
+        "   (hashes in SOURCES.txt there) into THIRD_PARTY_LICENSES/cpython-%s/embedded-libraries/:" % EMBED_VERSION,
+        "",
+    ]
+    lines += ["        " + name for name in embedded_notices] or ["        (none found: WARNING, run scripts/fetch_python_notices.py)"]
+    lines += [
+        "",
+        "   Question for Legal: do these suffice for the libraries in this build?",
+        "",
+        "3. System libraries are the customer's, not shipped",
+        "",
+        "   The interpreter links the C library of the machine it runs on (glibc: libc, libm, libpthread and others), so it needs glibc",
+        "   %s or later (the highest glibc symbol in any shipped file is %s). Nothing from glibc is distributed." % (
+            "%d.%d" % LINUX_MAX_GLIBC, "%d.%d" % floor if floor else "none"),
+        "",
+        "4. Native files from third-party packages; packages left out",
+        "",
+        "   Shared libraries in the package: " + (", ".join(native_files) or "none") + " (NATIVE_FILES.txt lists every ELF file with its SHA-256).",
+        "   Packages downloaded (hash-checked against uv.lock) and left out because the server never imports them: " + (", ".join(omitted_packages) or "none") + ".",
+        "   Linux has no code-signing check comparable to Windows'.",
+        "",
+        "5. The product licence text in this zip was copied, not written for this product",
+        "",
+        "   LICENSE is the AI Solutions Software License Agreement text from the cortex-bridge repository, copied byte",
+        "   for byte (its SHA-256 is recorded in BUILDINFO as license_sha256).",
+        "",
+        "   Question for Legal: is this the approved licence text for lattice-diamond-mcp?",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def build_linux(stage, archive):
+    version = project_version()
+    interpreter = stage / "python"
+    removed = unpack_pbs(archive, interpreter)
+    site = interpreter / "lib" / ("python" + MINOR) / "site-packages"
+    python_licence = interpreter / "lib" / ("python" + MINOR) / "LICENSE.txt"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        wheels = Path(tmp) / "wheels"
+        wheels.mkdir()
+        own = build_own_wheel(wheels)
+        download_wheels(wheels, own, LINUX_TAGS, linux_marker_environment(), "Linux")
+        omitted_packages = omit_packages(wheels)
+        log("  left out (the server does not use them): " + ", ".join(omitted_packages))
+        check_closure(wheels, linux_marker_environment(), exempt=set(OMITTED_PACKAGES))
+        log("  every other package the wheels need on Linux is present")
+        skipped_scripts = unpack_wheels(wheels, site)
+        if skipped_scripts:
+            log("  not installed (scripts in .data folders): " + ", ".join(skipped_scripts))
+        (stage / "requirements.txt").write_text(requirements_text(wheels), encoding="utf-8")
+        index, missing = extract_licences(wheels, stage / "THIRD_PARTY_LICENSES", own.name.split("-")[0] + "-")
+        wheel_count = len(list(wheels.glob("*.whl")))
+        site_names = sorted({n.split("/", 1)[0] for w in wheels.glob("*.whl") for n in zipfile.ZipFile(w).namelist()
+                             if "/" in n and not n.split("/", 1)[0].endswith((".dist-info", ".data"))})
+    floor = glibc_floor(interpreter)
+
+    cpython_dir = stage / "THIRD_PARTY_LICENSES" / ("cpython-" + EMBED_VERSION)
+    cpython_dir.mkdir(parents=True, exist_ok=True)
+    if python_licence.is_file():
+        shutil.copyfile(python_licence, cpython_dir / "LICENSE.txt")
+    else:
+        missing.append("cpython " + EMBED_VERSION)
+    release_file = NOTICES_DIR / "RELEASE"
+    release = release_file.read_text(encoding="utf-8").strip() if release_file.is_file() else ""
+    if release != PBS_RELEASE:
+        raise BuildError("scripts/python_notices/ holds the notices of python-build-standalone release %s, but this build uses release %s. "
+                         "Run scripts/fetch_python_notices.py --release %s and have Legal read the diff." % (release or "(unknown)", PBS_RELEASE, PBS_RELEASE))
+    notices = collect_notices(cpython_dir / "embedded-libraries", platform=LINUX_PLATFORM)
+    if not notices:
+        missing.append("notices for the libraries inside cpython")
+    index += "\ncpython %s  [PSF-2.0]\n    LICENSE.txt\n" % EMBED_VERSION
+    index += "".join("    embedded-libraries/%s\n" % n for n in notices)
+    (stage / "THIRD_PARTY_LICENSES.txt").write_text("See LEGAL_REVIEW.txt for items that need a decision from Legal.\n\n" + index, encoding="utf-8")
+
+    inventory = native_inventory(stage, LINUX_PLATFORM)
+    (stage / "NATIVE_FILES.txt").write_text(inventory_text(inventory), encoding="utf-8")
+    licence_present = (REPO / "LICENSE").is_file()
+    (stage / "LEGAL_REVIEW.txt").write_text(linux_legal_review_text(
+        version=version, embedded_notices=notices, native_files=[Path(r[0]).name for r in inventory if "site-packages" in r[0]],
+        removed=removed, omitted_packages=omitted_packages, floor=floor), encoding="utf-8")
+    if licence_present:
+        shutil.copyfile(REPO / "LICENSE", stage / "LICENSE")
+
+    info = {
+        "name": PACKAGE, "version": version, "kind": "embedded", "platform": LINUX_PLATFORM,
+        "python": EMBED_VERSION, "python_tag": PYTHON_TAG, "python_source": PBS_URL, "python_sha256": PBS_SHA256,
+        "python_release": PBS_RELEASE, "python_pgp_fingerprint": None, "python_pgp_verified": False,
+        "min_glibc": "%d.%d" % floor if floor else None, "program": LINUX_PROGRAM,
+        "git": git_commit(), "built": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "wheel_count": wheel_count, "uv_lock_sha256": sha256_file(REPO / "uv.lock"),
+        "license_sha256": sha256_file(REPO / "LICENSE") if licence_present else None,
+        "omitted_packages": omitted_packages, "unsigned_native_modules": [], "removed_programs": [],
+    }
+    (stage / "BUILDINFO").write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
+    shutil.copy(REPO / "scripts" / "install.py", stage / "install.py")
+    guide = REPO / "docs" / "Lattice_Diamond_MCP_Server_UserGuide.md"
+    shutil.copy(guide, stage / guide.name)
+    write_manifest(stage)
+    return info, missing, site_names
 
 
 # ------------------------------------------------------------------------ build
@@ -806,24 +1080,36 @@ def write_zip(stage, outdir, info):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Build the Windows package with python.org's embeddable Python (no executable of ours).")
+    parser = argparse.ArgumentParser(description="Build an embedded-Python package (no executable of ours): for Windows with python.org's "
+                                                 "embeddable Python, or for Linux with python-build-standalone's.")
+    parser.add_argument("--platform", choices=("windows", "linux"), default="windows", help="which package to build (default: windows)")
     parser.add_argument("--outdir", default=str(REPO / "dist"), help="Output directory (default: dist).")
-    parser.add_argument("--embed-zip", help="Use this already downloaded embeddable zip (it is still checked against the pinned SHA-256).")
-    parser.add_argument("--embed-sig", help="The .asc signature that belongs to --embed-zip (default: downloaded from python.org).")
-    parser.add_argument("--skip-pgp", action="store_true", help="Do not check the OpenPGP signature (local experiments only).")
-    parser.add_argument("--skip-verify", action="store_true", help="Do not test-install the package on Windows (not for releases).")
+    parser.add_argument("--embed-zip", help="Use this already downloaded interpreter archive (python.org's zip for Windows, the "
+                                            "python-build-standalone .tar.gz for Linux); it is still checked against its pinned SHA-256.")
+    parser.add_argument("--embed-sig", help="Windows: the .asc signature that belongs to --embed-zip (default: downloaded from python.org).")
+    parser.add_argument("--skip-pgp", action="store_true", help="Windows: do not check the OpenPGP signature (local experiments only).")
+    parser.add_argument("--skip-verify", action="store_true", help="Do not test-install the package when this system can run it (not for releases).")
     args = parser.parse_args(argv)
+    linux = args.platform == "linux"
+    if linux and (args.embed_sig or args.skip_pgp):
+        parser.error("--embed-sig and --skip-pgp are for the Windows package (python-build-standalone publishes no signature)")
+    runs_here = sys.platform.startswith("linux") if linux else sys.platform == "win32"
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            embed_zip, fingerprint = fetch_embeddable(tmp, args.embed_zip, args.embed_sig, not args.skip_pgp)
             stage = Path(tmp) / "bundle"
             stage.mkdir()
-            info, missing, site_names = build(stage, embed_zip, fingerprint)
-            verify_layout(stage, site_names)
-            if sys.platform == "win32" and not args.skip_verify:
+            if linux:
+                archive = fetch_pbs(tmp, args.embed_zip)
+                info, missing, site_names = build_linux(stage, archive)
+                verify_layout_linux(stage, site_names)
+            else:
+                embed_zip, fingerprint = fetch_embeddable(tmp, args.embed_zip, args.embed_sig, not args.skip_pgp)
+                info, missing, site_names = build(stage, embed_zip, fingerprint)
+                verify_layout(stage, site_names)
+            if runs_here and not args.skip_verify:
                 verify_install(stage)
-            elif sys.platform != "win32":
-                log("NOTE: not on Windows, so the package was checked for layout only and was not run.")
+            elif not runs_here:
+                log("NOTE: not on %s, so the package was checked for layout only and was not run." % ("Linux" if linux else "Windows"))
             target, digest = write_zip(stage, Path(args.outdir), info)
     except BuildError as exc:
         print("\nBUILD FAILED: %s" % exc, file=sys.stderr)
@@ -832,10 +1118,14 @@ def main(argv=None):
     log("Built %s" % target)
     log("  size:    %.1f MB" % (target.stat().st_size / 1e6))
     log("  sha256:  %s" % digest)
-    log("  python:  %s (python.org embeddable)   platform: %s   wheels: %d" % (EMBED_VERSION, PLATFORM, info["wheel_count"]))
-    log("  OpenPGP: " + ("verified, key " + info["python_pgp_fingerprint"] if info["python_pgp_verified"] else "NOT CHECKED"))
-    if info["unsigned_native_modules"]:
-        log("  unsigned native modules (third-party): " + ", ".join(info["unsigned_native_modules"]))
+    log("  python:  %s (%s)   platform: %s   wheels: %d" % (EMBED_VERSION, "python-build-standalone" if linux else "python.org embeddable",
+                                                          info["platform"], info["wheel_count"]))
+    if linux:
+        log("  glibc:   %s or later   integrity: SHA-256 pinned (no signature is published)" % info["min_glibc"])
+    else:
+        log("  OpenPGP: " + ("verified, key " + info["python_pgp_fingerprint"] if info["python_pgp_verified"] else "NOT CHECKED"))
+        if info["unsigned_native_modules"]:
+            log("  unsigned native modules (third-party): " + ", ".join(info["unsigned_native_modules"]))
     if missing:
         log()
         log("WARNING: no licence file was found for: " + ", ".join(missing) + ". Check before release.")

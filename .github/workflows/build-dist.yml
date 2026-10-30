@@ -23,6 +23,12 @@ name: Build dist
 #               package below. Built by scripts/build_embedded.py, which runs on any OS but can test the
 #               result only on Windows, so this workflow builds it there.
 #
+#   COMBINED-EMBEDDED   lattice-diamond-mcp-<version>-embedded-windows-linux-x86_64.zip
+#               The Windows embedded package above and its Linux twin: python-build-standalone's CPython 3.12.10 (the
+#               interpreter uv uses) with the locked packages unpacked into it, started as `bin/python3.12 -I -m diamond_mcp`.
+#               No executable of ours and no PyInstaller on either system, one design for both. This is the direction of the
+#               project; the standalone and hybrid packages above are being retired.
+#
 # Each zip is built on the operating system it is for: pip and uv resolve for the machine they run
 # on, so a Windows zip built on Linux would silently lack Windows-only dependencies.
 #
@@ -64,10 +70,10 @@ on:
         required: true
         default: 'main'
       installers:
-        description: 'Which installers to build (both = standalone and wheels; embedded = the hybrid package, which also builds the standalone zips)'
+        description: 'Which installers to build (combined-embedded = the Windows and Linux embedded-Python package; both = standalone, wheels, hybrid and combined-embedded; embedded = the hybrid package, which also builds the standalone zips)'
         required: false
         type: choice
-        options: [both, standalone, wheels, embedded]
+        options: [both, standalone, wheels, embedded, combined-embedded]
         default: both
       wheels_python:
         description: 'Python version of the wheels zips (3.11 is the minimum), or `all`'
@@ -84,7 +90,7 @@ jobs:
 
   build-standalone:
     name: Build standalone (${{ matrix.name }})
-    if: ${{ inputs.installers != 'wheels' }}
+    if: ${{ inputs.installers != 'wheels' && inputs.installers != 'combined-embedded' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
@@ -381,7 +387,7 @@ jobs:
 
   build-embedded:
     name: Build embedded package (windows-x86_64)
-    if: ${{ inputs.installers == 'both' || inputs.installers == 'embedded' }}
+    if: ${{ inputs.installers == 'both' || inputs.installers == 'embedded' || inputs.installers == 'combined-embedded' }}
     runs-on: windows-2022
     timeout-minutes: 30
     defaults:
@@ -651,12 +657,281 @@ jobs:
           '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --uninstall --install-dir "$INSTALL_DIR"
           if [ -e "$INSTALL_DIR" ]; then echo "$INSTALL_DIR is still there" >&2; exit 1; fi
 
+  # ---------------------------------------------------------------- combined-embedded (Windows + Linux)
+  #
+  # A bundled Python (python.org's, signed, for Windows; python-build-standalone's for Linux) with the locked packages
+  # unpacked into it, for each system, and the two combined into one zip. No executable of ours on either system, no PyInstaller.
+  # The Windows half is built by build-embedded and verify-embedded above; these jobs add the Linux half and the combination.
+
+  build-linux-embedded:
+    name: Build embedded package (linux-x86_64)
+    if: ${{ inputs.installers == 'both' || inputs.installers == 'combined-embedded' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Set up Python to run the build script
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install the build tool
+        run: python -m pip install build
+
+      # Fails, and writes nothing, if the downloaded interpreter differs from the pinned SHA-256, a package differs from uv.lock,
+      # a file needs a glibc newer than 2.17, the folder holds a program other than bin/python3.12 or a symbolic link, the
+      # notices belong to another interpreter release, or the package does not install and start.
+      - name: Build the Linux embedded package
+        run: python scripts/create_export.py --linux-embedded --outdir out
+
+      - name: Upload the Linux embedded package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lattice-diamond-mcp-embedded-linux-x86_64
+          path: |
+            out/lattice-diamond-mcp-*.zip
+            out/lattice-diamond-mcp-*.zip.sha256
+            out/lattice-diamond-mcp-*.zip.sbom.cdx.json
+            out/lattice-diamond-mcp-*.zip.buildinfo
+          if-no-files-found: error
+
+  # Installs the Linux package on fresh runners of two Ubuntu releases with old and new installer Pythons, starts the installed
+  # server over MCP, and uninstalls.
+  verify-linux-embedded:
+    needs: build-linux-embedded
+    name: Verify Linux embedded package (${{ matrix.os }}, installer on Python ${{ matrix.installer_python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            installer_python: '3.8'
+          - os: ubuntu-24.04
+            installer_python: '3.13'
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Download the Linux embedded package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lattice-diamond-mcp-embedded-linux-x86_64
+          path: out
+
+      - name: Check the checksum
+        run: cd out && sha256sum -c ./*.zip.sha256
+
+      - name: Unpack
+        run: |
+          mkdir unpacked
+          unzip -q out/lattice-diamond-mcp-*.zip -d unpacked
+          bundle=$(echo "$PWD"/unpacked/*/)
+          bundle=${bundle%/}
+          test -f "$bundle/install.py" && test -x "$bundle/python/bin/python3.12"
+          # the only program in the package is bin/python3.12, and there are no symbolic links
+          others=$(find "$bundle/python/bin" -type f ! -name python3.12 | head -n 1)
+          if [ -n "$others" ]; then echo "unexpected program: $others" >&2; exit 1; fi
+          links=$(find "$bundle" -type l | head -n 1)
+          if [ -n "$links" ]; then echo "unexpected symbolic link: $links" >&2; exit 1; fi
+
+      - name: Set up the installer's Python
+        id: installer
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.installer_python }}
+
+      - name: Set up Python for the protocol check
+        id: checker
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          bundle=$(echo "$PWD"/unpacked/*/)
+          install_dir="$RUNNER_TEMP/diamond-mcp-python"
+          '${{ steps.installer.outputs.python-path }}' "${bundle%/}/install.py" --no-register --install-dir "$install_dir" | tee install.log
+          grep -q "Integrity: all" install.log
+          echo "INSTALL_DIR=$install_dir" >> "$GITHUB_ENV"
+
+      # The server must not need the packages the build leaves out (pyjwt, cryptography, cffi, pycparser).
+      - name: The server imports and none of the left-out packages is loaded
+        run: |
+          "$INSTALL_DIR/bin/python3.12" -I -c "import sys, diamond_mcp.server; left_out = {'jwt', 'cryptography', 'cffi', 'pycparser'}; bad = sorted(m for m in sys.modules if m.split('.')[0] in left_out); assert not bad, 'the server imports packages that the package leaves out: %s' % bad; print('the server imports under', sys.version.split()[0], '; none of the left-out packages is imported')"
+
+      - name: Talk MCP to the installed server
+        run: |
+          '${{ steps.checker.outputs.python-path }}' scripts/smoke_test.py "$INSTALL_DIR/bin/python3.12" --args="-I -m diamond_mcp"
+
+      - name: Uninstall
+        run: |
+          bundle=$(echo "$PWD"/unpacked/*/)
+          '${{ steps.installer.outputs.python-path }}' "${bundle%/}/install.py" --uninstall --install-dir "$INSTALL_DIR"
+          if [ -e "$INSTALL_DIR" ]; then echo "$INSTALL_DIR is still there" >&2; exit 1; fi
+
+  # The combined-embedded package: the Windows and Linux embedded packages in one zip, one install.py.
+  combine-embedded:
+    needs: [build-embedded, verify-embedded, build-linux-embedded, verify-linux-embedded]
+    if: ${{ !cancelled() && needs.build-embedded.result == 'success' && needs.verify-embedded.result == 'success' && needs.build-linux-embedded.result == 'success' && needs.verify-linux-embedded.result == 'success' }}
+    name: Combine the embedded packages (Windows + Linux)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Download the Windows embedded package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lattice-diamond-mcp-embedded-windows-x86_64
+          path: parts
+
+      - name: Download the Linux embedded package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lattice-diamond-mcp-embedded-linux-x86_64
+          path: parts
+
+      - name: Check the checksums
+        run: |
+          ls -la parts
+          cd parts && sha256sum -c ./*.zip.sha256
+
+      # create_export.py combines the two zips (it refuses unless they come from one commit and one version), installs the result
+      # on this Linux runner, and writes the SBOM and the internal .buildinfo beside the zip.
+      - name: Combine
+        run: |
+          python scripts/create_export.py --combined-embedded --outdir out \
+            --windows-zip parts/lattice-diamond-mcp-*-embedded-windows-x86_64.zip \
+            --linux-zip parts/lattice-diamond-mcp-*-embedded-linux-x86_64.zip
+          ls -la out
+
+      - name: Upload the combined-embedded package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lattice-diamond-mcp-combined-embedded
+          path: |
+            out/lattice-diamond-mcp-*.zip
+            out/lattice-diamond-mcp-*.zip.sha256
+            out/lattice-diamond-mcp-*.zip.sbom.cdx.json
+            out/lattice-diamond-mcp-*.zip.buildinfo
+          if-no-files-found: error
+
+  # Installs the combined package on a fresh runner of each system the way a customer would: install.py must choose the right
+  # folder, and the installed server must speak MCP.
+  verify-combined-embedded:
+    needs: combine-embedded
+    name: Verify combined-embedded (${{ matrix.os }}, installer on Python ${{ matrix.installer_python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            installer_python: '3.8'
+          - os: ubuntu-24.04
+            installer_python: '3.13'
+          - os: windows-2022
+            installer_python: '3.8'
+    defaults:
+      run:
+        shell: bash
+    env:
+      REF: ${{ inputs.ref || 'main' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.REF }}
+
+      - name: Download the combined-embedded package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: lattice-diamond-mcp-combined-embedded
+          path: out
+
+      - name: Check the checksum
+        run: cd out && sha256sum -c ./*.zip.sha256
+
+      - name: Unpack
+        run: |
+          mkdir unpacked
+          unzip -q out/lattice-diamond-mcp-*.zip -d unpacked
+          bundle=$(echo "$PWD"/unpacked/*/)
+          bundle=${bundle%/}
+          test -f "$bundle/install.py" && test -f "$bundle/windows-x86_64/python/python.exe" && test -f "$bundle/linux-x86_64/python/bin/python3.12"
+
+      - name: Set up the installer's Python
+        id: installer
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.installer_python }}
+
+      - name: Set up Python for the protocol check
+        id: checker
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install with the installer's Python
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          install_dir=$(native "$RUNNER_TEMP/diamond-mcp-embedded")
+          '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --no-register --install-dir "$install_dir" | tee install.log
+          grep -q "several builds; using the one for ${{ runner.os == 'Windows' && 'windows' || 'linux' }}-x86_64" install.log
+          grep -q "Integrity: all" install.log
+          echo "INSTALL_DIR=$install_dir" >> "$GITHUB_ENV"
+
+      - name: Talk MCP to the installed server
+        run: |
+          if [ -f "$INSTALL_DIR/python.exe" ]; then program="$INSTALL_DIR/python.exe"; else program="$INSTALL_DIR/bin/python3.12"; fi
+          '${{ steps.checker.outputs.python-path }}' scripts/smoke_test.py "$program" --args="-I -m diamond_mcp"
+
+      - name: Uninstall
+        run: |
+          native() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+          bundle=$(echo "$PWD"/unpacked/*/)
+          '${{ steps.installer.outputs.python-path }}' "$(native "${bundle%/}")/install.py" --uninstall --install-dir "$INSTALL_DIR"
+          if [ -e "$INSTALL_DIR" ]; then echo "$INSTALL_DIR is still there" >&2; exit 1; fi
+
   # ---------------------------------------------------------------------------------- wheels
 
   # Turns the `wheels_python` choice into the list the two wheels jobs build and verify.
   plan:
     name: Plan the wheels builds
-    if: ${{ inputs.installers != 'standalone' }}
+    if: ${{ inputs.installers != 'standalone' && inputs.installers != 'combined-embedded' }}
     runs-on: ubuntu-22.04
     timeout-minutes: 5
     outputs:
@@ -679,7 +954,7 @@ jobs:
   build-wheels:
     needs: plan
     name: Build wheels (${{ matrix.name }}, Python ${{ matrix.python }})
-    if: ${{ inputs.installers != 'standalone' }}
+    if: ${{ inputs.installers != 'standalone' && inputs.installers != 'combined-embedded' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:

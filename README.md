@@ -364,7 +364,7 @@ timestamp differ between builds. This was measured with two builds.
 | Input | Values | Default |
 |---|---|---|
 | `ref` | branch, tag or commit to build | `main` |
-| `installers` | `both`, `standalone`, `wheels` | `both` |
+| `installers` | `both`, `standalone`, `wheels`, `embedded` (the Windows embedded package and the hybrid package), `combined-embedded` (the Windows and Linux embedded packages, combined) | `both` |
 | `wheels_python` | `3.11`, `3.12`, `3.13`, `all` (only for the wheels zips) | `3.11` |
 
 | Job | What it does | Artifacts |
@@ -540,6 +540,36 @@ when `installers` is `both` or `embedded`: jobs `build-embedded`, `verify-embedd
 `verify-combined-hybrid`. Not tested on Windows: nothing here has run there, including the signature check and the
 installed server; the first workflow run is the first test.
 
+### Combined-embedded: the same design on Windows and Linux
+
+The embedded design (a bundled Python with the locked packages unpacked into it, no executable of ours, no PyInstaller)
+is built for both systems and combined: `python scripts/create_export.py --combined-embedded` writes
+`lattice-diamond-mcp-<version>-embedded-windows-linux-x86_64.zip` (one `install.py`, one folder per system), and the workflow
+runs it with the `installers` input `combined-embedded` (jobs `build-embedded`, `verify-embedded`, `build-linux-embedded`,
+`verify-linux-embedded`, `combine-embedded`, `verify-combined-embedded`). The plan is to make this the only package; the
+standalone (PyInstaller) and hybrid packages stay only until it has passed CI, then they are removed in two further steps.
+
+**The Linux half** (`python scripts/build_embedded.py --platform linux`, or `create_export.py --linux-embedded`) uses the
+CPython 3.12.10 of python-build-standalone release 20250529, the build that uv 0.13.5 fetches for that version. The build
+downloads that archive itself from the pinned URL and checks it against the SHA-256 pinned in the script (taken from the release's
+`SHA256SUMS`), so it needs neither uv nor a Linux machine; python-build-standalone publishes no signature, so there is no OpenPGP
+check as on Windows. From the `install_only_stripped` archive it keeps `bin/python3.12` and the standard library and deletes the
+rest (pip, Tcl/Tk, IDLE, the test suite, headers, man pages, the shared `libpython`, which the statically linked interpreter does
+not use, and every symbolic link); the locked cp312 manylinux wheels are added with the same checks as on Windows (hashes against
+`uv.lock`, markers judged for Linux, the same packages left out). The package is about 20 MB zipped, holds three ELF files
+(the interpreter and the `pydantic_core` and `rpds` modules) and is started as `bin/python3.12 -I -m diamond_mcp`.
+
+What the build checks and stops on: the archive's SHA-256; no path outside `python/` in the archive; the interpreter present; no file
+needing a glibc newer than 2.17 (read with `objdump -T`; the highest symbol in the package is 2.17, so Red Hat 7 and newer work);
+only `bin/python3.12` in `bin/`, executable, and no symbolic links or pip; the notices in `scripts/python_notices/` belonging to
+the same python-build-standalone release (`PBS_RELEASE` against `scripts/python_notices/RELEASE`); and, on a Linux machine, that the
+finished zip installs with its own `install.py` and starts. Not "no system dependency": the interpreter links the system glibc
+(libc, libm, libpthread), which is why the floor is glibc 2.17; only musl builds are static.
+
+`install.py` handles both: it copies the `python` folder, repairs a lost execute bit on Linux, checks `bin/python3.12 -I -m
+diamond_mcp --help`, registers that command, and recognises the folder for `--uninstall`. `scripts/smoke_test.py PROGRAM
+--args="-I -m diamond_mcp"` is the MCP check the workflow and `create_export.py` use for both systems.
+
 ### `create_export.py`: one command for the customer package
 
 `scripts/create_export.py` is the single entry point, with the same options, file names and sidecar files as
@@ -568,7 +598,7 @@ it installs anything: a changed or missing file stops the install and names the 
 and says so. In a combined zip each OS folder keeps its manifest, minus the line for `install.py` (the single one at
 the top).
 
-The Linux program is a PyInstaller build and can be made only on Linux, so on Windows `--both` needs `--linux-zip`. The
+The Linux program of `--linux` and `--both` is a PyInstaller build and can be made only on Linux, so on Windows `--both` needs `--linux-zip`; `--linux-embedded` and `--combined-embedded` work on any system. The
 script fails when a builder reports a package without a licence text, unless `--allow-license-gaps` is given. The
 finished zips are install-tested with their own `install.py` and the installed server is started over MCP, for the
 operating system the script runs on; the other system's half is reported as not run. The `.buildinfo` file is an internal

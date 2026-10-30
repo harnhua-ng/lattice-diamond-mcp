@@ -674,8 +674,16 @@ def install_binary_bundle(args, info, folder=None):
     return server
 
 
-def embedded_python(install_dir):
-    return os.path.join(install_dir, "python.exe")
+def embedded_python(install_dir, program=None):
+    """The bundled interpreter inside `install_dir`: python.exe on Windows; on Linux the `program` the build recorded
+    (bin/python3.12), or else the one real python3.* file in bin/ (links and the -config helper do not count)."""
+    if IS_WINDOWS:
+        return os.path.join(install_dir, "python.exe")
+    if program:
+        return os.path.join(install_dir, *program.split("/"))
+    found = [path for path in sorted(glob.glob(os.path.join(glob.escape(install_dir), "bin", "python3.*")))
+             if os.path.isfile(path) and not os.path.islink(path) and not path.endswith("-config")]
+    return found[0] if found else os.path.join(install_dir, "bin", "python3")
 
 
 def default_embedded_dir():
@@ -683,17 +691,21 @@ def default_embedded_dir():
 
 
 def install_embedded_bundle(args, info, folder=None):
-    """Windows: copy python.org's embeddable Python, with the packages inside it, into place and check that the
-    server starts. There is no program of ours in it. Returns the path of python.exe."""
+    """Copy the bundled Python (python.org's embeddable one on Windows, python-build-standalone's on Linux), with the
+    packages inside it, into place and check that the server starts. There is no program of ours in it. Returns the
+    path of the interpreter, which is what gets registered."""
     install_dir = os.path.abspath(args.install_dir or default_embedded_dir())
     source = os.path.join(folder or HERE, "python")
-    python = embedded_python(install_dir)
+    program = info.get("program")
+    python = embedded_python(install_dir, program)
     say("Installing lattice-diamond-mcp %s with the bundled Python %s (nothing else needs to be installed)."
         % (info["version"], info.get("python", "?")))
-    if not args.dry_run and not os.path.isfile(embedded_python(source)):
+    if not args.dry_run and not os.path.isfile(embedded_python(source, program)):
         raise InstallError("The python folder is missing next to install.py. Run the installer from the unpacked zip.")
     if not place_folder(args, source, install_dir, "bundled Python"):
         return python
+    if not IS_WINDOWS and os.path.isfile(python):
+        os.chmod(python, os.stat(python).st_mode | 0o755)  # some unzip tools drop the execute bit
     say("Checking the installation")
     check = run([python] + WHEELS_SERVER_ARGS + ["--help"], quiet=True)
     if "diamond-mcp" not in check.stdout:
