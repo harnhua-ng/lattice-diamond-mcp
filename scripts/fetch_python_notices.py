@@ -6,17 +6,17 @@ Refresh scripts/python_notices/: the licence notices of the libraries inside the
 
     python scripts/fetch_python_notices.py [--release 20250529]
 
-The standalone program embeds a CPython from python-build-standalone (the build that uv fetches). That
+The Linux embedded package ships a CPython from python-build-standalone (the build that uv fetches). That
 interpreter has OpenSSL, zlib, expat and other libraries compiled in, and their licences ask for a notice to
 accompany a binary. The interpreter that uv installs has none of those files; the project publishes them only in
 its "full" archive of each release. This script downloads that archive for each platform, checks its SHA-256
 against the release's SHA256SUMS, and copies the notices of the libraries the program can contain into
 scripts/python_notices/<platform>/, with SOURCES.txt recording the release, archive and file hashes.
-The folder is checked in, so a build needs no network for it; build_binary.py refuses to build when the
-release of the interpreter in use (its BUILD file) is not the release recorded here.
+The folder is checked in, so a build needs no network for it; build_embedded.py refuses to build when its
+interpreter release (PBS_RELEASE) is not the release recorded here.
 
-When to run it: after changing UV_VERSION or PYTHON_VERSION in build_binary.py, or when `uv python` has
-moved to a newer python-build-standalone release. Then read the diff: a library that was added or whose licence
+When to run it: after changing EMBED_VERSION or PBS_RELEASE in build_embedded.py (run it with --release, and with
+--cpython-only for python.org's own notices of the Windows build). Then read the diff: a library that was added or whose licence
 changed needs a decision from Legal. Needs the `zstd` program for the archive; the rest is the standard library.
 """
 
@@ -37,9 +37,10 @@ DEFAULT_RELEASE = "20250529"
 BASE = "https://github.com/astral-sh/python-build-standalone/releases/download/%s/"
 
 # Per platform: the archive flavour and the notices of the libraries that end up in the program, with the evidence.
-# Linux: compiled into libpython3.11.so.1.0 (symbols and version strings found in it). Windows: separate DLLs and
-# extension modules next to python311.dll (libcrypto, libffi, sqlite3, zlib1 and the .pyd files). Tcl/Tk, X11,
-# Berkeley DB and zstd are left out: PyInstaller bundles only what the server imports, and none of them is imported.
+# Linux: compiled into libpython3.X.so.1.0 (symbols and version strings found in it). Windows: separate DLLs and
+# extension modules next to python3X.dll (libcrypto, libffi, sqlite3, zlib1 and the .pyd files). Tcl/Tk, X11,
+# Berkeley DB and zstd are left out: the packages delete Tcl/Tk and the modules that need the others, and the server imports
+# none of them.
 PLATFORMS = {
     "linux-x86_64": {
         "archive": "cpython-%s+%s-x86_64-unknown-linux-gnu-pgo+lto-full.tar.zst",

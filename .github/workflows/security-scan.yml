@@ -42,7 +42,7 @@ jobs:
 
       - name: Install the pinned uv
         run: |
-          uv_version=$(python -c "import pathlib, re; print(re.search(r'^UV_VERSION = \"([0-9.]+)\"', pathlib.Path('scripts/build_binary.py').read_text(), re.M).group(1))")
+          uv_version=$(python -c "import pathlib, re; print(re.search(r'^UV_VERSION = \"([0-9.]+)\"', pathlib.Path('scripts/build_embedded.py').read_text(), re.M).group(1))")
           echo "uv ${uv_version}"
           python -m pip install "uv==${uv_version}"
 

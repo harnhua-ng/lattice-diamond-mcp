@@ -1,5 +1,5 @@
 """Tests for the Linux embedded package (build_embedded.py --platform linux), its install on Linux, scripts/smoke_test.py,
-and create_export.py's --linux-embedded and --combined-embedded modes."""
+and create_export.py's --linux and --both modes."""
 
 import hashlib
 import importlib.util
@@ -324,9 +324,10 @@ def fake_embedded_zip(folder, platform, version="0.1.0", git="abc1234"):
 
 def test_the_new_modes_are_listed_in_the_help_and_need_the_right_options():
     help_text = subprocess.run([sys.executable, str(SCRIPTS / "create_export.py"), "--help"], stdout=subprocess.PIPE, text=True).stdout
-    assert "--combined-embedded" in help_text and "--linux-embedded" in help_text and "--linux-python" in help_text
-    for argv in (["--windows", "--linux-python", "x.tar.gz"], ["--linux-embedded", "--embed-zip", "x.zip"], ["--linux-embedded", "--skip-pgp"],
-                 ["--windows", "--combined-embedded"], ["--linux-embedded", "--windows-zip", "w.zip"]):
+    assert "--both" in help_text and "--linux" in help_text and "--linux-python" in help_text
+    assert "--combined-embedded" not in help_text and "PyInstaller" not in help_text and "hybrid" not in help_text
+    for argv in (["--windows", "--linux-python", "x.tar.gz"], ["--linux", "--embed-zip", "x.zip"], ["--linux", "--skip-pgp"],
+                 ["--windows", "--both"], ["--linux", "--windows-zip", "w.zip"]):
         assert subprocess.run([sys.executable, str(SCRIPTS / "create_export.py")] + argv, capture_output=True, text=True).returncode == 2, argv
 
 
@@ -334,11 +335,11 @@ def test_combined_embedded_builds_both_halves_and_one_zip_with_sidecars_from_any
     windows, linux = fake_embedded_zip(tmp_path, "windows-x86_64"), fake_embedded_zip(tmp_path, "linux-x86_64")
     calls = []
     monkeypatch.setattr(export, "build_windows", lambda root, work, args: calls.append("windows") or windows)
-    monkeypatch.setattr(export, "build_linux_embedded", lambda root, work, args: calls.append("linux") or linux)
+    monkeypatch.setattr(export, "build_linux", lambda root, work, args: calls.append("linux") or linux)
     monkeypatch.setattr(export, "project_version", lambda root: "0.1.0")
     args = export.argparse.Namespace(
         outdir=str(tmp_path / "out"), repo=str(REPO), ref=export.WORKTREE, windows_zip=None, linux_zip=None, linux_python=None,
-        embed_zip=None, embed_sig=None, skip_pgp=False, which="combined-embedded", label="rc1", no_verify=True, allow_license_gaps=False)
+        embed_zip=None, embed_sig=None, skip_pgp=False, which="both", label="rc1", no_verify=True, allow_license_gaps=False)
     (final, digest, sbom), = export.build_all(args)
     assert calls == ["windows", "linux"]
     assert final.name == "lattice-diamond-mcp-0.1.0-rc1-embedded-windows-linux-x86_64.zip"
@@ -350,17 +351,17 @@ def test_combined_embedded_builds_both_halves_and_one_zip_with_sidecars_from_any
     refs = [c["bom-ref"] for c in bom["components"]]
     assert platforms == {"windows", "linux"} and len(refs) == len(set(refs))
     record = Path(str(final) + ".buildinfo").read_text()
-    assert "part:     windows" in record and "part:     linux-embedded" in record
+    assert "part:     windows" in record and "part:     linux" in record
 
 
 def test_prebuilt_halves_are_combined_without_building(tmp_path, monkeypatch):
     windows, linux = fake_embedded_zip(tmp_path, "windows-x86_64"), fake_embedded_zip(tmp_path, "linux-x86_64")
     monkeypatch.setattr(export, "build_windows", lambda *a: pytest.fail("must not build"))
-    monkeypatch.setattr(export, "build_linux_embedded", lambda *a: pytest.fail("must not build"))
+    monkeypatch.setattr(export, "build_linux", lambda *a: pytest.fail("must not build"))
     monkeypatch.setattr(export, "project_version", lambda root: "0.1.0")
     args = export.argparse.Namespace(
         outdir=str(tmp_path / "out"), repo=str(REPO), ref=export.WORKTREE, windows_zip=str(windows), linux_zip=str(linux), linux_python=None,
-        embed_zip=None, embed_sig=None, skip_pgp=False, which="combined-embedded", label="", no_verify=True, allow_license_gaps=False)
+        embed_zip=None, embed_sig=None, skip_pgp=False, which="both", label="", no_verify=True, allow_license_gaps=False)
     (final, _, _), = export.build_all(args)
     assert final.name == "lattice-diamond-mcp-0.1.0-embedded-windows-linux-x86_64.zip"
 
@@ -368,10 +369,10 @@ def test_prebuilt_halves_are_combined_without_building(tmp_path, monkeypatch):
 def test_the_linux_half_alone_keeps_its_name_and_gets_sidecars(tmp_path, monkeypatch):
     (tmp_path / "w").mkdir()
     linux = fake_embedded_zip(tmp_path / "w", "linux-x86_64")
-    monkeypatch.setattr(export, "build_linux_embedded", lambda root, work, args: linux)
+    monkeypatch.setattr(export, "build_linux", lambda root, work, args: linux)
     monkeypatch.setattr(export, "project_version", lambda root: "0.1.0")
     args = export.argparse.Namespace(
         outdir=str(tmp_path / "out"), repo=str(REPO), ref=export.WORKTREE, windows_zip=None, linux_zip=None, linux_python=None,
-        embed_zip=None, embed_sig=None, skip_pgp=False, which="linux-embedded", label="", no_verify=True, allow_license_gaps=False)
+        embed_zip=None, embed_sig=None, skip_pgp=False, which="linux", label="", no_verify=True, allow_license_gaps=False)
     (final, _, sbom), = export.build_all(args)
-    assert final.name == linux.name and sbom.exists() and "linux-embedded" in Path(str(final) + ".buildinfo").read_text()
+    assert final.name == linux.name and sbom.exists() and "part:     linux" in Path(str(final) + ".buildinfo").read_text()

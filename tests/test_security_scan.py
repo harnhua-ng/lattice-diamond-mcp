@@ -148,7 +148,7 @@ def test_an_unreachable_osv_is_reported_as_an_error_not_as_clean(lock, monkeypat
 
 def test_the_real_lock_file_can_be_read():
     runtime, build, project = osv_check.read_lock(SCAN.parent / "uv.lock")
-    assert project == "lattice-diamond-mcp" and any(n == "mcp" for n, _ in runtime) and any(n == "pyinstaller" for n, _ in build)
+    assert project == "lattice-diamond-mcp" and any(n == "mcp" for n, _ in runtime) and any(n == "pytest" for n, _ in build)   # a test-only extra, not shipped
 
 
 # -------------------------------------------------------------------- fuzzing

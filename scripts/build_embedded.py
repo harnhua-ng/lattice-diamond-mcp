@@ -2,14 +2,16 @@
 # Copyright(c) 2026 Lattice Semiconductor Corporation. All rights reserved. DO NOT DISTRIBUTE.
 # Subject to the terms of the AI Solutions Software License Agreement
 """
-Build the Windows package that contains no executable of ours.
+Build the embedded-Python packages: a bundled interpreter with the locked packages unpacked into it, and no executable
+of ours.
 
-    python scripts/build_embedded.py [--outdir dist] [--embed-zip FILE] [--skip-verify]
+    python scripts/build_embedded.py [--platform windows|linux] [--outdir dist] [--embed-zip FILE] [--skip-verify]
 
-The standalone package is a PyInstaller program: `diamond-mcp.exe` is a launcher nobody has signed, which
-Windows Defender and SmartScreen distrust. This package has no such file. It is python.org's own
-"embeddable" Python for Windows, which the Python Software Foundation has signed, with the locked packages
-unpacked beside it; the server is `python\\python.exe -I -m diamond_mcp`.
+A frozen launcher (PyInstaller's, which this project used before) is a program nobody has signed, which Windows Defender
+and SmartScreen distrust. This package has no such file. For Windows it is python.org's own "embeddable" Python, which the
+Python Software Foundation has signed, with the locked packages unpacked beside it; the server is
+`python\\python.exe -I -m diamond_mcp`. For Linux (--platform linux) it is python-build-standalone's CPython, described in
+the Linux section below; the server is `python/bin/python3.12 -I -m diamond_mcp`. The Windows layout:
 
     lattice-diamond-mcp-<version>/
         install.py  BUILDINFO  LICENSE  LEGAL_REVIEW.txt  THIRD_PARTY_LICENSES.txt  THIRD_PARTY_LICENSES/
@@ -71,10 +73,10 @@ PGP_FINGERPRINT = "7ED10B6531D7C8E1BC296021FC624643487034E5"
 PGP_KEY = REPO / "scripts" / "keys" / "python-windows-release-signing.asc"
 PGP_BAD_STATUS = ("BADSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "ERRSIG", "NO_PUBKEY")
 NOTICES_DIR = REPO / "scripts" / "python_notices"
+UV_VERSION = "0.13.5"   # the uv that resolved uv.lock and that picks the Linux interpreter below; CI installs this version
 # Packages that are downloaded (at the versions and hashes in uv.lock) and then left out, with the reason. The server never
 # imports them: pyjwt (mcp's token handling for OAuth servers and clients, which this stdio server does not use) and what only
-# it pulls in. The standalone program, which PyInstaller builds from import analysis, does not contain them either, and a
-# test starts the server and fails if any of them is imported.
+# it pulls in. A test starts the server and fails if any of them is imported, and the verify jobs check the installed server.
 OMITTED_PACKAGES = {
     "pyjwt": "imported only by mcp's OAuth code, which a stdio server does not load",
     "cryptography": "only pyjwt[crypto] pulls it in (it is a compiled library)",

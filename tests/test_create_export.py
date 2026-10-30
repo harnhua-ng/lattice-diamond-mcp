@@ -66,10 +66,10 @@ def run_cli(*args):
                           stdin=subprocess.DEVNULL, timeout=120)
 
 
-def test_help_describes_the_modes_the_hybrid_package_and_the_sidecars():
+def test_help_describes_the_modes_the_combined_package_and_the_sidecars():
     result = run_cli("--help")
     assert result.returncode == 0
-    for needle in ("--windows", "--linux", "--both", "--ref", "--label", "--no-verify", "hybrid", ".sbom.cdx.json", ".buildinfo"):
+    for needle in ("--windows", "--linux", "--both", "--ref", "--label", "--no-verify", "embedded-windows-linux", ".sbom.cdx.json", ".buildinfo"):
         assert needle in result.stdout, needle
 
 
@@ -82,13 +82,6 @@ def test_a_label_may_hold_only_safe_characters():
     result = run_cli("--windows", "--label", "bad/label")
     assert result.returncode == 2 and "--label may contain only" in result.stderr
 
-
-def test_the_linux_program_cannot_be_built_on_windows_so_both_needs_a_linux_zip(monkeypatch, capsys):
-    monkeypatch.setattr(export, "IS_LINUX", False)
-    monkeypatch.setattr(sys, "argv", ["create_export.py", "--both"])
-    with pytest.raises(SystemExit):
-        export.main()
-    assert "--linux-zip" in capsys.readouterr().err
 
 
 def test_prebuilt_zips_are_only_for_both(monkeypatch, capsys):
@@ -186,34 +179,23 @@ def test_the_windows_components_are_the_interpreter_and_every_package(tmp_path):
     assert all(c["bom-ref"].endswith("?platform=windows") for c in components)
 
 
-def test_the_hybrid_sbom_holds_both_operating_systems_with_unique_references(tmp_path):
-    windows, linux = fake_zip(tmp_path, "embedded", "windows-x86_64"), fake_zip(tmp_path, "binary", "linux-x86_64")
-    zip_path = tmp_path / "lattice-diamond-mcp-0.1.0-hybrid-windows-linux-x86_64.zip"
+def test_the_combined_sbom_holds_both_operating_systems_with_unique_references(tmp_path):
+    windows = fake_zip(tmp_path, "embedded", "windows-x86_64")
+    (tmp_path / "l").mkdir()
+    linux = fake_zip(tmp_path / "l", "embedded", "linux-x86_64")
+    zip_path = tmp_path / "lattice-diamond-mcp-0.1.0-embedded-windows-linux-x86_64.zip"
     zip_path.write_bytes(b"zip")
     out = export.write_sbom(zip_path, "e" * 64, "0.1.0", "2026-10-29T00:00:00Z", "abc1234", [("windows", windows), ("linux", linux)])
     bom = json.loads(out.read_text())
     refs = [c["bom-ref"] for c in bom["components"]]
     assert len(refs) == len(set(refs)) and out.name == zip_path.name + ".sbom.cdx.json"
-    platforms = {c["name"]: [p["value"] for p in c["properties"] if p["name"] == "lattice:platform"] for c in bom["components"]}
-    assert platforms["anyio"] == ["linux"] and platforms["cpython"] == ["windows"]
+    platforms = {p["value"] for c in bom["components"] for p in c.get("properties", []) if p["name"] == "lattice:platform"}
+    assert platforms == {"windows", "linux"}
+    assert sum(1 for c in bom["components"] if c["name"] == "cpython") == 2
     assert bom["metadata"]["component"]["hashes"][0]["content"] == "e" * 64 and bom["bomFormat"] == "CycloneDX"
 
 
 # ------------------------------------------------------------------ the whole orchestration
-
-def test_both_builds_the_hybrid_package_with_its_sidecars_and_a_label(tmp_path, monkeypatch):
-    windows, linux = fake_zip(tmp_path, "embedded", "windows-x86_64"), fake_zip(tmp_path, "binary", "linux-x86_64")
-    args = export.argparse.Namespace(
-        outdir=str(tmp_path / "out"), repo=str(SCRIPTS.parent), ref=export.WORKTREE, windows_zip=str(windows), linux_zip=str(linux),
-        embed_zip=None, embed_sig=None, skip_pgp=False, which="both", label="rc1", no_verify=True, allow_license_gaps=False)
-    monkeypatch.setattr(export, "project_version", lambda root: "0.1.0")
-    (final, digest, sbom), = export.build_all(args)
-    assert final.name == "lattice-diamond-mcp-0.1.0-rc1-hybrid-windows-linux-x86_64.zip"
-    assert Path(str(final) + ".sha256").read_text() == "%s  %s\n" % (digest, final.name) == "%s  %s\n" % (hashlib.sha256(final.read_bytes()).hexdigest(), final.name)
-    assert sbom.exists() and "windows-x86_64/" in "".join(zipfile.ZipFile(final).namelist())
-    record = Path(str(final) + ".buildinfo").read_text()
-    assert "NOT shipped" in record and "part:     windows lattice-diamond-mcp-0.1.0-embedded-windows-x86_64.zip" in record
-    assert "part:     linux" in record and "source:   WORKTREE" in record
 
 
 def test_one_half_alone_is_copied_labelled_and_given_sidecars(tmp_path, monkeypatch):

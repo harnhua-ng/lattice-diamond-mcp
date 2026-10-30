@@ -8,7 +8,7 @@ Ask OSV.dev whether any package pinned in uv.lock has a known advisory.
 
 Every locked package is sent to https://api.osv.dev/v1/querybatch (ecosystem PyPI, exact version).
 Packages are split into two groups: RUNTIME (reachable from the project's own dependencies, so they
-end up in the installers) and BUILD (only needed to build, for example PyInstaller). An advisory on
+end up in the installers) and BUILD (only needed to build or test, for example pytest). An advisory on
 a runtime package fails the check; one on a build-only package is listed and fails only with
 --strict. Uses the standard library and needs network access to api.osv.dev.
 

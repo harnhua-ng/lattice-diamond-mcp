@@ -1,0 +1,233 @@
+"""Tests that span the packaging scripts: the product licence text, the checked-in interpreter notices, checksum files,
+the default install folders, and the installer's handling of the legacy standalone (binary) bundle."""
+
+import hashlib
+import importlib.util
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+import pytest
+
+SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+REPO = SCRIPTS.parent
+sys.path.insert(0, str(SCRIPTS))
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS / (name + ".py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+embedded = load("build_embedded")
+install = load("install")
+posix_only = pytest.mark.skipif(os.name == "nt", reason="uses shell-script test doubles")
+
+
+def test_the_repository_licence_is_the_unmodified_agreement_text():
+    text = (REPO / "LICENSE").read_text(encoding="utf-8")
+    assert text.startswith("AI SOLUTIONS SOFTWARE LICENSE AGREEMENT")
+    # Its notice allows free distribution only with this line, and forbids changing the terms.
+    assert "(c)2026 Lattice Semiconductor Corporation. You may freely distribute the text of this Agreement" in text
+    assert "THIRD_PARTY_LICENSES.txt" in text  # section 4 points at the file both zips ship
+
+
+
+def test_the_checked_in_notices_cover_every_library_the_manifest_names():
+    for platform in ("linux-x86_64", "windows-x86_64"):
+        have = {p.name for p in (embedded.NOTICES_DIR / platform).glob("LICENSE.*.txt")}
+        assert have and all(p.stat().st_size > 20 for p in (embedded.NOTICES_DIR / platform).glob("LICENSE.*.txt"))   # liblzma's is one line: public domain
+        assert "LICENSE.openssl-3.txt" in have and "LICENSE.zlib.txt" in have and "LICENSE.expat.txt" in have
+    assert (embedded.NOTICES_DIR / "RELEASE").read_text().strip().isdigit()
+    sources = (embedded.NOTICES_DIR / "SOURCES.txt").read_text()
+    for platform in ("linux-x86_64", "windows-x86_64"):
+        for path in (embedded.NOTICES_DIR / platform).glob("LICENSE.*.txt"):
+            assert hashlib.sha256(path.read_bytes()).hexdigest() in sources, path.name
+
+
+
+def windows_text_mode(monkeypatch):
+    """Make Path.write_text behave as on Windows, where text mode turns \\n into \\r\\n."""
+    original = Path.write_text
+
+    def write_text(self, data, encoding=None, errors=None, newline=None):
+        if newline is None:
+            data = data.replace("\n", "\r\n")
+        return original(self, data, encoding=encoding, errors=errors, newline="")
+
+    monkeypatch.setattr(Path, "write_text", write_text)
+
+
+@pytest.mark.parametrize("module_name", ["build_embedded", "build_installer"])
+def test_checksum_file_has_unix_line_endings_even_where_text_mode_adds_carriage_returns(tmp_path, monkeypatch, module_name):
+    # Regression: on Windows the .sha256 file was written as "<hash>  <name>\\r\\n", and `sha256sum -c`
+    # (run by the CI verify jobs under Git Bash) then looked for a file whose name ends in a carriage return.
+    windows_text_mode(monkeypatch)
+    module = load(module_name)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "BUILDINFO").write_text("{}")
+    out = tmp_path / "out"
+    out.mkdir()
+    info = {"version": "0.1.0", "python": "3.11", "python_tag": "cp311", "platform": "linux-x86_64"}
+    target, digest = module.write_zip(stage, out, info)
+    checksum = out / (target.name + ".sha256")
+    raw = checksum.read_bytes()
+    assert b"\r" not in raw
+    assert raw == ("%s  %s\n" % (digest, target.name)).encode()
+
+
+def test_the_simulation_really_would_have_broken_the_old_behaviour(tmp_path, monkeypatch):
+    windows_text_mode(monkeypatch)
+    probe = tmp_path / "probe"
+    probe.write_text("a\n", encoding="utf-8")
+    assert probe.read_bytes() == b"a\r\n"
+
+
+
+# -------------------------------------------------------- installer: binary bundles
+
+@pytest.fixture
+def bundle(tmp_path, monkeypatch):
+    """An unpacked binary installer: BUILDINFO, install.py's folder, and a program that answers --help."""
+    root = tmp_path / "bundle"
+    (root / "diamond-mcp" / "_internal").mkdir(parents=True)
+    program = root / "diamond-mcp" / install.binary_server("").lstrip("/\\")
+    program.write_text('#!/bin/sh\necho "usage: diamond-mcp [-h]"\n')
+    program.chmod(0o644)  # deliberately lost the execute bit, as some unzip tools do
+    (root / "diamond-mcp" / "_internal" / "lib.so").write_text("x")
+    info = {"version": "0.1.0", "kind": "binary", "platform": "linux-x86_64", "min_glibc": None}
+    (root / "BUILDINFO").write_text(json.dumps(info))
+    monkeypatch.setattr(install, "HERE", str(root))
+    return root, info
+
+
+@posix_only
+def test_binary_install_copies_checks_marks_and_repairs_the_execute_bit(bundle, tmp_path):
+    _, info = bundle
+    target = tmp_path / "inst"
+    args = install.parse_args(["--no-register", "--install-dir", str(target)])
+    server = install.install_binary_bundle(args, info)
+    assert server == str(target / "diamond-mcp")
+    assert (target / "_internal" / "lib.so").exists() and (target / install.MARKER).exists()
+    assert os.access(server, os.X_OK)
+    assert not Path(str(target) + ".installing").exists()
+
+
+@posix_only
+def test_binary_reinstall_replaces_the_previous_copy(bundle, tmp_path):
+    _, info = bundle
+    target = tmp_path / "inst"
+    args = install.parse_args(["--no-register", "--install-dir", str(target)])
+    install.install_binary_bundle(args, info)
+    (target / "stale.txt").write_text("from an older version")
+    install.install_binary_bundle(args, info)
+    assert not (target / "stale.txt").exists() and (target / "_internal" / "lib.so").exists()
+
+
+@posix_only
+def test_binary_install_refuses_a_folder_it_did_not_create(bundle, tmp_path):
+    _, info = bundle
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    (foreign / "precious.txt").write_text("keep")
+    args = install.parse_args(["--no-register", "--install-dir", str(foreign)])
+    with pytest.raises(install.InstallError, match="not created by this installer"):
+        install.install_binary_bundle(args, info)
+    assert (foreign / "precious.txt").exists()
+
+
+@posix_only
+def test_binary_install_accepts_an_existing_empty_folder(bundle, tmp_path):
+    _, info = bundle
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    install.install_binary_bundle(install.parse_args(["--no-register", "--install-dir", str(empty)]), info)
+    assert (empty / install.MARKER).exists()
+
+
+def test_binary_install_dry_run_touches_nothing(bundle, tmp_path):
+    _, info = bundle
+    target = tmp_path / "inst"
+    args = install.parse_args(["--dry-run", "--no-register", "--install-dir", str(target)])
+    install.install_binary_bundle(args, info)
+    assert not target.exists() and not Path(str(target) + ".installing").exists()
+
+
+def test_binary_install_reports_a_missing_program_folder(bundle, tmp_path):
+    root, info = bundle
+    import shutil
+    shutil.rmtree(root / "diamond-mcp")
+    args = install.parse_args(["--no-register", "--install-dir", str(tmp_path / "inst")])
+    with pytest.raises(install.InstallError, match="folder is missing"):
+        install.install_binary_bundle(args, info)
+
+
+@posix_only
+def test_binary_install_reports_a_program_that_does_not_start(bundle, tmp_path):
+    root, info = bundle
+    (root / "diamond-mcp" / "diamond-mcp").write_text('#!/bin/sh\necho "version GLIBC_2.35 not found" >&2; exit 1\n')
+    args = install.parse_args(["--no-register", "--install-dir", str(tmp_path / "inst")])
+    with pytest.raises(install.InstallError, match="GLIBC_2.35"):
+        install.install_binary_bundle(args, info)
+
+
+@posix_only
+def test_do_install_chooses_the_binary_path_from_buildinfo(bundle, tmp_path, capsys):
+    _, info = bundle
+    target = tmp_path / "inst"
+    install.do_install(install.parse_args(["--no-register", "--install-dir", str(target)]), info)
+    out = capsys.readouterr().out
+    assert "self-contained" in out and "pip" not in out and str(target / "diamond-mcp") in out
+
+
+@posix_only
+def test_binary_uninstall_removes_registration_and_folder(bundle, tmp_path, fake_claude):
+    claude, state = fake_claude
+    _, info = bundle
+    target = tmp_path / "inst"
+    install.install_binary_bundle(install.parse_args(["--no-register", "--install-dir", str(target)]), info)
+    state.write_text("diamond\t%s\nother\t/x\n" % install.binary_server(str(target)))
+    install.do_uninstall(install.parse_args(["--uninstall", "--install-dir", str(target), "--claude-path", claude]))
+    assert not target.exists() and state.read_text() == "other\t/x\n"
+
+
+def test_uninstall_targets_follow_the_kind_of_installation(bundle, tmp_path):
+    root, _ = bundle
+    args = install.parse_args(["--uninstall"])
+    assert install.uninstall_targets(args) == [("binary", install.default_install_dir())]
+    (root / "BUILDINFO").write_text(json.dumps({"kind": "wheels"}))
+    assert install.uninstall_targets(args) == [("wheels", install.default_venv_dir()), ("wheels", install.previous_venv_dir())]
+    (root / "BUILDINFO").unlink()
+    assert [k for k, _ in install.uninstall_targets(args)] == ["binary", "embedded", "wheels", "wheels"]  # unknown kind: look at both
+    explicit = install.parse_args(["--uninstall", "--install-dir", str(tmp_path / "a")])
+    assert install.uninstall_targets(explicit) == [("binary", str(tmp_path / "a"))]
+
+
+@pytest.fixture
+def fake_claude(tmp_path, monkeypatch):
+    sys.path.insert(0, str(Path(__file__).parent))
+    import test_installer
+    script = tmp_path / "claude"
+    script.write_text(test_installer.FAKE_CLAUDE)
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    state = tmp_path / "state"
+    state.write_text("")
+    monkeypatch.setenv("FAKE_CLAUDE_STATE", str(state))
+    return str(script), state
+
+
+
+def test_default_environment_is_in_the_per_user_data_folder(monkeypatch, tmp_path):
+    monkeypatch.setattr(install, "IS_WINDOWS", True)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    assert install.default_venv_dir() == str(tmp_path / "Local" / "lattice-diamond-mcp" / "venv")
+    monkeypatch.setattr(install, "IS_WINDOWS", False)
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "share"))
+    assert install.default_venv_dir() == str(tmp_path / "share" / "lattice-diamond-mcp" / "venv")
+    monkeypatch.delenv("XDG_DATA_HOME")
+    assert install.default_venv_dir().endswith(os.path.join(".local", "share", "lattice-diamond-mcp", "venv"))
