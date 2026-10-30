@@ -44,12 +44,15 @@ tests/
     test_*.py            unit tests
     test_integration.py  tests against a real Diamond (skipped by default)
 scripts/
-    build_binary.py      builds the standalone (Python-free) installer zip, SBOM and checks
-    diamond-mcp.spec     PyInstaller spec (drops host libgcc_s and the build tools)
-    pyinstaller_entry.py the program PyInstaller freezes
+    create_export.py     the entry point: builds the embedded packages, combines them, writes SBOM and records
+    build_embedded.py    builds the Windows or Linux embedded-Python zip (checks interpreter, wheels, layout)
     build_installer.py   builds the wheels installer zip (verifies it before writing)
     combine_installers.py  joins the per-OS zips of one kind into one Windows + Linux package
-    install.py           the installer that ships in both zips (standard library only)
+    install.py           the installer that ships in every zip (standard library only)
+    smoke_test.py        speaks MCP to an installed server (used by the builds and CI)
+    fetch_python_notices.py  refreshes the licence notices of the libraries inside the interpreters
+    python_notices/      those notices, with the hashes of where they came from
+    keys/                the python.org Windows release-signing key (OpenPGP)
 security_scan/
     run_scans.py         runs every scan below; README.md lists the results and findings
     secrets_scan.py      regular-expression secrets scan of the working tree
@@ -58,9 +61,9 @@ security_scan/
     dast_stdio.py        probes of the running server over stdio
     results/             the scan output behind the README, before and after the fixes
 .github/workflows/
-    build-dist.yml       builds and verifies both installers on Linux and Windows
+    build-dist.yml       builds and verifies the installers on Linux and Windows
     security-scan.yml    unit tests and security_scan/run_scans.py on every push and weekly
-uv.lock                  exact, hashed versions of every dependency (and of PyInstaller)
+uv.lock                  exact, hashed versions of every dependency
 pyproject.toml           packaging and pytest configuration
 ```
 
@@ -236,163 +239,128 @@ These were found by running real Diamond and are encoded in the code and tests.
 
 ## How to build and package
 
-There are two installers. Both are offline zips that `scripts/install.py` installs and registers
-with Claude Code; `BUILDINFO` inside each says which kind it is.
+There are two installers. Both are offline zips that `scripts/install.py` installs and registers with
+Claude Code; `BUILDINFO` inside each says which kind it is. Neither installs a program of ours.
 
-| | Standalone (recommended) | Wheels |
+| | Embedded (recommended) | Wheels |
 |---|---|---|
-| Built by | `scripts/build_binary.py` | `scripts/build_installer.py` |
+| Built by | `scripts/create_export.py` (runs `scripts/build_embedded.py`) | `scripts/build_installer.py` |
 | Built in CI | yes, `build-dist.yml` | yes, `build-dist.yml` |
-| Result | PyInstaller program with its own CPython | wheels installed into a virtual environment |
+| Result | a bundled Python with the locked packages inside it | wheels installed into a virtual environment |
+| Interpreter | Windows: python.org's embeddable 3.12.10 (PSF-signed); Linux: python-build-standalone 3.12.10 | the customer's |
 | Python needed to **run** it | none | the exact version it was built for (3.11) |
 | Python needed to **install** it | any 3.8 or later | the exact version it was built for |
 | Minimum Linux | glibc 2.17 (Red Hat 7) | glibc 2.28 (Red Hat 8) |
-| Size | about 17 MB zip, 34 MB installed | about 10 MB zip, 65 MB installed |
-| SBOM | yes (CycloneDX, see below) | no |
+| Size | about 16 MB (Windows) and 20 MB (Linux) zipped; 36 MB combined | about 10 MB zip, 65 MB installed |
+| SBOM | yes (CycloneDX, beside the zip) | no |
 
-### The standalone installer
+Earlier versions also built a standalone PyInstaller program and a "hybrid" package (the Windows embedded
+package with that program for Linux). Both were removed once the embedded package passed CI on both systems:
+the PyInstaller launcher was an unsigned `diamond-mcp.exe` that Windows Defender and SmartScreen distrusted.
 
-```bash
-pip install uv==0.13.5                 # the pinned version; the script refuses another
-python scripts/build_binary.py         # writes dist/lattice-diamond-mcp-<version>-<platform>.zip (+ .sha256, .cdx.json)
+### `create_export.py`: one command for the customer package
+
+`scripts/create_export.py` is the single entry point, with the same options, file names and sidecar files as
+cortex-bridge's script of that name. It runs `build_embedded.py` for each system and `combine_installers.py`.
+
+```
+python scripts/create_export.py --both                       # the combined Windows + Linux package
+python scripts/create_export.py --windows --outdir out       # Windows half only
+python scripts/create_export.py --linux --outdir out         # Linux half only
+python scripts/create_export.py --both --ref main --label rc1 --outdir dist/main
+python scripts/create_export.py --both --windows-zip W.zip --linux-zip L.zip     # combine halves built elsewhere
 ```
 
-Run it with any Python 3.11 or later. The Python that goes **into** the program is a separate,
-uv-managed CPython (`PYTHON_VERSION` in the script), so the result does not depend on the build
-machine's Python or system libraries. Build one zip per operating system, each on that system.
-
-What the build does; any failure stops it and writes nothing:
-
-1. Checks `uv lock --check` (the lock matches `pyproject.toml`) and the pinned uv version.
-2. Installs the pinned CPython with `uv python install --no-bin --no-registry` (so uv creates no
-   shortcuts or registry entries) and builds with `uv run --frozen --no-editable --group build
-   pyinstaller scripts/diamond-mcp.spec`. Every package is the exact, hash-checked version in
-   `uv.lock`. PyInstaller is a locked **build** dependency (`[dependency-groups] build` in
-   `pyproject.toml`), not a runtime dependency.
-3. **On Linux, fails if any bundled native file needs glibc newer than 2.17.** This gate is what
-   keeps the program runnable on Red Hat 7, and it matters: PyInstaller copies `libgcc_s.so.1`
-   from the build machine, and Ubuntu 22.04's copy needs glibc 2.35, which would stop the program
-   starting on Red Hat 7 and Red Hat 8. The spec leaves that library out so the target's own copy
-   is used (`HOST_LIBRARIES` in `scripts/diamond-mcp.spec`). It also leaves out the packaging
-   tools PyInstaller's hooks would otherwise freeze in (`BUILD_TOOLS`).
-4. Starts the built program and speaks MCP to it: `initialize`, `tools/list` (at least 30 tools)
-   and a tool call.
-5. Writes the SBOM, collects licence texts, writes `BUILDINFO` and `LEGAL_REVIEW.txt`, zips the result with `install.py`,
-   then **installs that zip into a temporary folder and runs it again.**
-
-`python scripts/build_binary.py --smoke-test PATH_TO_PROGRAM` runs only step 4 against an existing
-program; the workflow uses it on the installed result.
-
-The program is a folder (PyInstaller "onedir"), not a single file. A one-file build unpacks itself
-into `/tmp` on every start, which is slower and needs a writable, executable `/tmp`; the sandbox
-example in the user guide makes `/tmp` a private tmpfs. `scripts/pyinstaller_entry.py` also gives
-the PyInstaller bootloader a flushable `sys.stdout` at exit: the MCP stdio transport closes
-`sys.stdout` when the client disconnects, and without this the bootloader's final flush printed a
-harmless but alarming `ValueError: I/O operation on closed file` traceback to stderr.
-
-#### The SBOM
-
-`uv export --format cyclonedx1.5` describes the locked Python packages only, and it is marked
-experimental by uv. It does not know what is inside the finished program, so `build_binary.py`
-corrects it:
-
-- **Packages that are locked but not in the program are removed.** `cffi`, `cryptography`,
-  `pycparser` and `pyjwt` (pulled in by `mcp`'s authentication code, which the stdio server never
-  loads) and the Windows-only `pywin32` are listed in the SBOM's
-  `diamond-mcp:locked-but-not-bundled` property instead, so scanners do not report vulnerabilities
-  in code that does not ship.
-- **The build fails if the program contains a package the SBOM would not list.** This was found
-  by measurement: PyInstaller was freezing `setuptools` and `packaging` from the build
-  environment into the program although they are not dependencies. They are now excluded, and
-  `check_sbom_matches_bundle` keeps it that way.
-- **The embedded interpreter and every bundled native file are added**, each native file with its
-  SHA-256 (the program, `libpython`, and the compiled `pydantic_core` and `rpds`).
-- Each package component carries the download location and SHA-256 of its files from the lock.
-- PyInstaller and uv are recorded as build tools.
-
-It does not contain licence data for the packages (uv does not export it); the licence texts are
-in `THIRD_PARTY_LICENSES/` in the zip. The interpreter is a python-build-standalone build; the
-SBOM names its version, not that project's own dependencies.
-
-#### PyInstaller's licence (for Legal)
-
-The PyInstaller *tool* is not shipped, but part of it is inside the program: the `diamond-mcp`
-executable is PyInstaller's compiled bootloader, and three of its loader modules are embedded.
-The licence file that ships with it (`COPYING.txt`, copied unmodified into `THIRD_PARTY_LICENSES/`)
-says PyInstaller is GPL-2.0-or-later with a "Bootloader Exception" that gives unlimited permission
-to link or embed the bootloader in other programs and distribute the result without restriction
-from those files; its run-time hooks are Apache-2.0. The licence file is shipped as a notice, as a
-precaution, and not because the exception is known to require one.
-
-#### Libraries inside the embedded Python (notices)
-
-The interpreter has OpenSSL, zlib, expat, bzip2, liblzma, mpdecimal and, on Linux, libedit, ncurses, libffi,
-libuuid and SQLite compiled into `libpython3.11.so.1.0` (on Windows, beside `python311.dll`). The interpreter
-that uv installs ships no notices for them. `scripts/python_notices/<platform>/` holds the ones that
-python-build-standalone publishes for the release in use; the build copies them, unmodified, into
-`THIRD_PARTY_LICENSES/cpython-<version>/embedded-libraries/` and lists them in `THIRD_PARTY_LICENSES.txt`
-and `LEGAL_REVIEW.txt`. `SOURCES.txt` there records the release, the SHA-256 of the archive each file came
-from (checked against the release's `SHA256SUMS`) and of each file. The build stops if the interpreter's
-release (its `BUILD` file) is not the release recorded in `scripts/python_notices/RELEASE`.
-
-After changing `UV_VERSION` or `PYTHON_VERSION`, or when uv moves to a newer python-build-standalone
-release, run `python scripts/fetch_python_notices.py --release <tag>` (needs `zstd`), read the diff, and have
-Legal look at any library that was added or whose licence changed. Tcl/Tk, X11, Berkeley DB and zstd are not
-shipped because the program does not contain them. The files are marked `-text` in `.gitattributes`, so git
-does not change their line endings.
-
-Each build writes `LEGAL_REVIEW.txt` into the zip and prints a pointer to it. It lists, for Legal,
-the PyInstaller item (what is embedded, what the shipped licence says, the open question), the libraries inside
-the embedded Python, and the product `LICENSE`, which is a copy of the cortex-bridge text. It is generated from the licence file that ships, and says
-`WARNING` instead of summarising the terms if the expected wording is no longer there, so a future
-PyInstaller release with different terms cannot pass unnoticed. It states facts, not conclusions.
-The wheels zip contains no PyInstaller code.
-
-#### Reproducibility
-
-The package set, the interpreter and the compiled libraries are identical from build to build,
-and `SOURCE_DATE_EPOCH` (set from the commit time) makes the `diamond-mcp` program itself
-identical too. The zip as a whole is **not** bit-for-bit reproducible: PyInstaller's
-`base_library.zip`, two packages' `RECORD` files, `BUILDINFO` and the SBOM's serial number and
-timestamp differ between builds. This was measured with two builds.
-
-#### CI: building and testing both installers
-
-`.github/workflows/build-dist.yml` builds **both** installers. It is started by hand: Actions tab,
-**Build dist**, **Run workflow**, with three inputs:
-
-| Input | Values | Default |
+| | cortex-bridge | here |
 |---|---|---|
-| `ref` | branch, tag or commit to build | `main` |
-| `installers` | `both`, `standalone`, `wheels`, `embedded` (the Windows embedded package and the hybrid package), `combined-embedded` (the Windows and Linux embedded packages, combined) | `both` |
-| `wheels_python` | `3.11`, `3.12`, `3.13`, `all` (only for the wheels zips) | `3.11` |
+| Required mode flag | `--online`, `--offline`, `--both` | `--windows`, `--linux`, `--both` |
+| `--outdir`, `--label`, `--no-verify`, `--allow-license-gaps` | yes | yes (same meaning) |
+| Build from a git ref | `--bridge-ref` (default `WORKTREE`) | `--ref` (default `WORKTREE`: the working tree, uncommitted changes included) |
+| `--python`, `--online-python`, `--platform` | per-Python wheel zips | not needed: each package carries its own interpreter |
+| Sidecars beside each zip | `.sha256`, `.sbom.cdx.json`, `.buildinfo` | the same three |
+| Inside the zip | `BUILDINFO`, `MANIFEST.sha256`, licences | `BUILDINFO`, `MANIFEST.sha256` (per OS folder), licences, `LEGAL_REVIEW.txt`, `NATIVE_FILES.txt` |
 
-| Job | What it does | Artifacts |
-|---|---|---|
-| `build-standalone` | `build_binary.py` on `ubuntu-22.04` and `windows-2022` | `lattice-diamond-mcp-standalone-<os>` (zip, `.sha256`, SBOM) |
-| `verify-standalone` | installs each zip on a fresh runner with an installer Python that is not the build one (3.8 on Ubuntu 22.04 and Windows, 3.13 on Ubuntu 24.04), checks the checksum, speaks MCP to the installed program, runs it with an empty environment and checks `ldd` (Linux), uninstalls | none |
-| `plan` | turns `wheels_python` into the list of Pythons to build | none |
-| `build-wheels` | `build_installer.py` on each OS under each chosen Python | `lattice-diamond-mcp-wheels-<os>-py<version>` (zip, `.sha256`) |
-| `verify-wheels` | installs each wheels zip under the Python it was built for, speaks MCP to the installed server, uninstalls | none |
+Both halves only download and unpack files, so every mode works on any system; the finished zip is installed with its
+own `install.py` and the installed server is started over MCP (`scripts/smoke_test.py`) for the system the script runs
+on, and the other half is reported as not run. `--embed-zip` (Windows) and `--linux-python` (Linux) use interpreter
+archives that were downloaded already. The script fails when a build reports a package without a licence text, unless
+`--allow-license-gaps` is given. The `.buildinfo` file is an internal record (commit, parts and their hashes,
+uncommitted-change note) and is never shipped.
 
-The wheels zip is tied to one Python version, so `wheels_python` picks which. Each zip is built on the
-OS it is for, because pip and uv resolve dependencies for the machine they run on. The two verify jobs
-run even if another OS's build failed (`!cancelled()`), so a first-time Windows failure does not hide the
-Linux result; the leg whose artifact is missing fails at the download step.
+`MANIFEST.sha256` (`<sha256>  <path>` per file) is written by every build, and `install.py` checks it before it
+installs anything: a changed or missing file stops the install and names the file. In a combined zip each OS folder
+keeps its manifest, minus the line for `install.py` (the single one at the top).
 
-To test both kinds on both platforms, run it with the defaults. To build only one kind, set
-`installers`. Two things must be in the ref you build: `.github/workflows/build-dist.yml` (GitHub's
-documentation says a `workflow_dispatch` workflow must be on the default branch to be started) and
-`uv.lock` (the standalone build fails without it, and fails if it is out of date).
+### The embedded packages
 
-**Status of the workflow:** its YAML validates against GitHub's workflow schema, and the shell steps of the
-standalone and wheels jobs were extracted from the file and executed on a Linux host, in order, in
-separate workspaces, starting from a bare Python. The workflow itself has **never run on GitHub**, and the
-Windows legs have never run anywhere. The Ubuntu runner is also untested; the glibc gate exists so that
-a surprise there fails the build instead of shipping. Install-test the first artifacts before relying on
-them. Not covered: the wheels zip is not tested on a machine whose default `python3` is older than the
-Python it needs (the standalone installer is, with 3.8), and neither route has a test job that runs the
-repository's own unit tests.
+The common design: a bundled Python with the packages from `uv.lock` unpacked into its `site-packages`, no executable of
+ours, no pip, started as `<interpreter> -I -m diamond_mcp`. In both:
+
+- **Every wheel** is checked against its SHA-256 in `uv.lock`, downloaded with pip for the *target* system: pip judges a
+  dependency's environment markers (`pywin32; sys_platform == 'win32'`) by the machine it runs on, whatever
+  `--platform` says, so the build runs pip with the target's marker values (as cortex-bridge's `create_export.py`
+  does) and then checks that every package the wheels need on that system is present.
+- **Packages the server never imports are left out:** `OMITTED_PACKAGES` in `build_embedded.py` (pyjwt, cryptography,
+  cffi, pycparser: only mcp's OAuth code uses pyjwt). A test starts the server and fails if any of them is imported,
+  and the verify jobs check the installed server.
+- **A wheel's `.data` folder** is unpacked by scheme (purelib and platlib into site-packages); scripts are left out and
+  reported; anything else is refused.
+- The package carries `BUILDINFO`, `MANIFEST.sha256`, `LEGAL_REVIEW.txt` (facts and open questions for Legal),
+  `NATIVE_FILES.txt` (every native file with its SHA-256, and its signer on Windows), `THIRD_PARTY_LICENSES/`
+  (each wheel's licence files, CPython's licence and the notices of the libraries built into the interpreter) and a
+  copy of the product `LICENSE`.
+
+**Windows** (`build_embedded.py --platform windows`): python.org's embeddable Python 3.12.10, which the Python Software
+Foundation has signed. The build checks the zip against the SHA-256 pinned in the script (`EMBED_SHA256`) **and**
+against python.org's OpenPGP signature (`.asc`) with the Windows release signer's key, checked in at
+`scripts/keys/python-windows-release-signing.asc` and pinned by fingerprint (`PGP_FINGERPRINT`, Steve Dower, Python
+Release Signing; needs `gpg`, which Git for Windows has; `--skip-pgp` is for local experiments and marks the build
+`python_pgp_verified: false`). It checks that `python.exe` carries the PSF's name in its signature block (the workflow's
+verify job has Windows validate it with `Get-AuthenticodeSignature`) and that `python.exe` is the only program
+(`pythonw.exe` is removed). The `._pth` file lists the library zip, the folder and `Lib\site-packages` and ends with
+`import site`, so that pywin32's `.pth` file is read; with a `._pth` file Python still ignores `PYTHONPATH` and the current
+folder. `mcp` imports `pywintypes`, `win32api`, `win32con` and `win32job` on Windows, so pywin32 is needed, but only eight
+of its files are kept (`PYWIN32_KEEP`); the build reads the import tables of the remaining native files and stops if one
+needs a DLL that was removed, and the verify job imports them for real. Six unsigned third-party native files remain
+(`_pydantic_core`, `rpds`, and four from pywin32); pywin32's `Pythonwin.exe` and `pythonservice.exe` are deleted.
+
+python.org's Windows binaries contain Microsoft Distributable Code (`vcruntime140*.dll`), whose terms are in the
+`LICENSE.txt` of python.org's zip ("Additional Conditions for this Windows binary build") and require that end users agree
+to terms protecting it, so the package ships `THIRD_PARTY_LICENSES/microsoft-distributable-code.txt`, reached through
+section 4 of the product licence (which is not edited; its reverse-engineering sentence is unverified wording from the
+project owner, and the build warns if python.org's clause ever changes). The notices for the libraries python.org builds
+in are its own list for the release (`Doc/license.rst` and the library versions of its Windows build, in
+`scripts/python_notices/cpython-3.12.10/`) plus the python-build-standalone texts from `scripts/python_notices/windows-x86_64/`.
+
+**Updating the signing key pin.** When a release is signed by someone else, fetch the new key, confirm its fingerprint
+against python.org's published list of release-signing keys (the script cannot do that for you), and replace the key
+file and the constant together.
+
+**Linux** (`build_embedded.py --platform linux`): CPython 3.12.10 from python-build-standalone release 20250529, the build
+that uv 0.13.5 (`UV_VERSION`) fetches for that version. The build downloads that archive from the pinned URL and checks it
+against the SHA-256 pinned in the script (`PBS_SHA256`, taken from the release's `SHA256SUMS`); python-build-standalone
+publishes no signature, so there is no OpenPGP check. From the `install_only_stripped` archive it keeps `bin/python3.12`
+and the standard library and deletes the rest (pip, Tcl/Tk, IDLE, the test suite, headers, man pages, the shared
+`libpython`, which the statically linked interpreter does not use, and every symbolic link). It stops on a path outside
+`python/` in the archive, a missing interpreter, any file needing a glibc newer than 2.17 (read with `objdump -T`),
+anything in `bin/` but the interpreter, a symbolic link, pip, or notices in `scripts/python_notices/` from another
+python-build-standalone release (`PBS_RELEASE` against `scripts/python_notices/RELEASE`). The package holds three ELF
+files (the interpreter and the `pydantic_core` and `rpds` modules). It is not free of system dependencies: the interpreter
+links the system glibc (libc, libm, libpthread), which is why the floor is glibc 2.17.
+
+**Notices of the libraries inside the interpreters.** OpenSSL, zlib, expat, bzip2, liblzma, mpdecimal and, on Linux, libedit,
+ncurses, libffi, libuuid and SQLite are built into the interpreters. `scripts/fetch_python_notices.py` fills
+`scripts/python_notices/<platform>/` with the notices python-build-standalone publishes for a release (checked against the
+release's `SHA256SUMS`; `SOURCES.txt` records every hash), and with `--cpython-only VERSION` writes python.org's own notices
+for that version's Windows build. The files are marked `-text` in `.gitattributes`, so git does not change their line endings.
+
+**Which Python: 3.12.10, on both systems, as a starting point.** python.org builds an embeddable zip only for releases that
+have binaries, and for 3.12 the last is 3.12.10 (3.12.11 to 3.12.16 are source-only security releases). The cost: the
+interpreter lacks the fixes of those six releases, and the Windows ones cannot be had as python.org binaries. 3.13.17 is
+current on both systems and has locked wheels, but python.org already publishes 3.13.18 as source only; 3.14 still has a
+Windows zip (3.14.10) and locked wheels but has not been validated here. To move, change `EMBED_VERSION`, `EMBED_SHA256`,
+`PBS_RELEASE` and `PBS_SHA256` together, re-run `scripts/fetch_python_notices.py` in both modes, and check the signature
+note above.
 
 ### The wheels installer
 
@@ -431,11 +399,11 @@ it runs on, so a Windows zip built on Linux would silently lack the Windows-only
 
 ### Combined packages (Windows and Linux in one zip)
 
-The **Build dist** workflow builds each kind on each operating system, then joins the zips of one kind
-into the packages to hand out, with `scripts/combine_installers.py`:
+The **Build dist** workflow builds each kind on each operating system, then joins the zips of one kind into the packages
+to hand out, with `scripts/combine_installers.py`:
 
 ```
-lattice-diamond-mcp-<version>-standalone-windows-linux-x86_64.zip     artifact lattice-diamond-mcp-combined-standalone
+lattice-diamond-mcp-<version>-embedded-windows-linux-x86_64.zip       artifact lattice-diamond-mcp-combined-embedded
 lattice-diamond-mcp-<version>-wheels-windows-linux-<cpNN>[-<cpNN>].zip  artifact lattice-diamond-mcp-combined-wheels
 ```
 
@@ -443,166 +411,45 @@ lattice-diamond-mcp-<version>-wheels-windows-linux-<cpNN>[-<cpNN>].zip  artifact
 lattice-diamond-mcp-<version>/
     install.py              one installer for every build
     PACKAGES.txt            which folder is which build
-    windows-x86_64/         a complete per-platform bundle, as it was built   (standalone)
+    windows-x86_64/         a complete per-platform bundle, as it was built   (embedded)
     linux-x86_64/
     windows-x86_64-cp311/   one folder per system and Python version         (wheels)
     linux-x86_64-cp311/
 ```
 
-Nothing inside a build is changed, so each folder's `BUILDINFO`, licences and SBOM still describe the
-files next to them, and Unix permissions are kept. The script refuses to write anything unless both
-operating systems are present, every input is the same kind, version and git commit, each system (and
-Python version) appears once, and every `install.py` is identical. By hand:
+Nothing inside a build is changed (except that each folder's `MANIFEST.sha256` loses the line for `install.py`), so each
+folder's `BUILDINFO` and licences still describe the files next to them, and Unix permissions are kept. The script refuses
+to write anything unless both operating systems are present, every input is the same kind, version and git commit, each
+system (and Python version) appears once, and every `install.py` is identical. By hand:
 
 ```bash
-python scripts/combine_installers.py --kind standalone --outdir dist  <windows zip> <linux zip>
-python scripts/combine_installers.py --kind wheels     --outdir dist  <every wheels zip of both systems>
+python scripts/combine_installers.py --kind embedded --outdir dist  <windows zip> <linux zip>
+python scripts/combine_installers.py --kind wheels   --outdir dist  <every wheels zip of both systems>
 ```
 
-The combine jobs run only after every per-OS zip of their kind has built and been installed on a fresh
-runner, and each combined zip is itself installed on fresh Linux and Windows runners (and, for wheels,
-under every Python version it holds) before the workflow succeeds. The per-OS artifacts remain as
-intermediates. `tests/test_combine.py` covers the combining and the choice of folder; the Windows legs
-have never run (see "Things to know").
+### CI: building and testing the installers
 
-### The embedded package (Windows, no executable of ours)
+`.github/workflows/build-dist.yml` is started by hand: Actions tab, **Build dist**, **Run workflow**, with three inputs:
 
-The standalone zip's `diamond-mcp.exe` is an unsigned PyInstaller launcher, which Windows Defender and
-SmartScreen distrust and which strict sites (AppLocker, WDAC) may block. `scripts/build_embedded.py` builds a
-Windows package without one: python.org's **embeddable Python** (3.12.10), which the Python Software Foundation
-has signed, with the packages from `uv.lock` unpacked into its `Lib\site-packages`. The server is
-`python\python.exe -I -m diamond_mcp`; no Python needs to be installed and pip is not included.
-
-```
-python scripts/build_embedded.py --outdir dist      # Windows or Linux; test-installs only on Windows
-```
-
-What the build checks, and stops on: the zip against the SHA-256 pinned in the script (`EMBED_SHA256`) **and**
-against python.org's OpenPGP signature (`.asc`) with the Windows release signer's key, which is checked in at
-`scripts/keys/python-windows-release-signing.asc` and pinned by fingerprint (`PGP_FINGERPRINT`, Steve Dower, Python
-Release Signing); needs `gpg` (Git for Windows has it), and `--skip-pgp` exists for local experiments and marks the
-build `python_pgp_verified: false`; that `python.exe` carries the
-Python Software Foundation's name in its signature block (the signature itself is not validated by the script;
-the workflow's verify job has Windows check it with `Get-AuthenticodeSignature`); each wheel against its SHA-256
-in `uv.lock`; no wheel with scripts; and that the only program in the package is `python.exe` (`pythonw.exe` is
-removed). The `._pth` file is rewritten to the library zip, the folder and `Lib\site-packages`.
-
-The package carries `LEGAL_REVIEW.txt` (the interpreter is unmodified; the notices for the libraries python.org
-builds in are python.org's own list for the release (`Doc/license.rst` and the library versions of its Windows build, copied from the CPython tag into `scripts/python_notices/cpython-3.12.10/`) plus the python-build-standalone texts from `scripts/python_notices/windows-x86_64/`;
-python.org's Windows binaries contain Microsoft Distributable Code (`vcruntime140*.dll`), whose terms are in the
-`LICENSE.txt` of python.org's zip ("Additional Conditions for this Windows binary build") and require that end users agree
-to terms protecting it, so the package ships `THIRD_PARTY_LICENSES/microsoft-distributable-code.txt` (reached through
-section 4 of the product licence, which is not edited; its reverse-engineering sentence is unverified wording from the
-project owner, and the build warns if python.org's clause ever changes); four third-party `.pyd` files are unsigned; the product
-`LICENSE` is a copy), `THIRD_PARTY_LICENSES/`, `NATIVE_FILES.txt` (every program, DLL and extension module with its signer and SHA-256) and
-`BUILDINFO` (`"kind": "embedded"`).
-
-**Updating the signing key pin.** python.org's Windows files are signed by the key in `PGP_FINGERPRINT`. When a release
-is signed by someone else, fetch the new key, confirm its fingerprint against python.org's published list of
-release-signing keys (the script cannot do that for you), replace the key file and the constant together.
-
-**Windows-only dependencies (pywin32).** `mcp` imports `pywin32` unconditionally on Windows, so the package must carry it
-or the server fails at import. pip decides a dependency's environment markers (`pywin32; sys_platform == 'win32'`) from the
-machine it runs on, whatever `--platform` says, so a build on Linux silently dropped it. The build therefore runs pip with the
-Windows marker values (as cortex-bridge's `create_export.py` does) and then checks that every package the wheels need on
-Windows is present. pywin32 needs three more things, all handled by the build: its `.pth` file is read only when
-`import site` is enabled, so the `._pth` file now ends with `import site` (it still ignores `PYTHONPATH` and the current
-folder, and `install.py` starts Python with `-I`); the scripts in a wheel's `.data/scripts` are not installed; and the two
-programs it ships, `Pythonwin.exe` and `pythonservice.exe`, are deleted (recorded in `BUILDINFO` as `removed_programs` and in
-`LEGAL_REVIEW.txt`). **Keeping the unsigned native files few.** A first version of this package had 59 unsigned third-party native files, 55 of
-them pywin32's. The build now ships only what the server uses, which leaves six: `_pydantic_core.pyd` and `rpds.pyd`
-(needed), and from pywin32 `win32api.pyd`, `win32job.pyd`, `_win32sysloader.pyd` and `pywintypes312.dll`
-(`mcp.os.win32.utilities` imports `pywintypes`, `win32api`, `win32con` and `win32job`; nothing else of pywin32 is used).
-Two lists in `scripts/build_embedded.py` hold the choices and the reasons: `PYWIN32_KEEP` (the eight files kept from the
-pywin32 wheel, including the pure-Python `pywintypes.py`, `win32con.py` and the bootstrap) and `OMITTED_PACKAGES` (pyjwt,
-cryptography, cffi and pycparser: only mcp's OAuth code uses pyjwt, and the standalone program does not contain them either).
-The build checks the trim itself: a wheel that no longer holds a kept file stops it; the import tables of the remaining
-native files are read and the build stops if one needs a DLL that was removed; a test starts the server and fails if any
-omitted package gets imported; and the Windows verify job imports `pywintypes`, `win32api`, `win32job`, `win32con` and the
-server for real. What a native module imports by name from Python code is invisible to the table check, so that last step is
-the one that proves the choice. Everything removed is recorded in `BUILDINFO` and `LEGAL_REVIEW.txt`. The package shrank from
-27 MB to 16 MB. `NATIVE_FILES.txt` lists every native file with its signer.
-
-**Which Python: 3.12.10, on both operating systems, as a starting point.** python.org builds an embeddable zip only for
-releases that have binaries, and for 3.12 the last is 3.12.10 (3.12.11 to 3.12.16 are source-only security releases).
-Windows therefore ships 3.12.10 (OpenPGP-verified, signed by the Python Software Foundation) and the Linux program is
-built on the same 3.12.10 (python-build-standalone release 20250529, which uv 0.13.5 selects for that version). The cost:
-the interpreter lacks the fixes of those six releases, and the Windows ones cannot be had as python.org binaries. 3.13.17
-is current on both systems and has locked wheels, but python.org already publishes 3.13.18 as source only, so the same
-limit is near for 3.13; 3.14 still has a Windows zip (3.14.10) and locked wheels but has not been validated here. To move,
-change `EMBED_VERSION` and `EMBED_SHA256` together, re-run `scripts/fetch_python_notices.py` (both modes) for the new
-version, and check the signature note above.
-
-**The hybrid package.** `combine_installers.py --kind standalone` accepts this zip for Windows together with the
-Linux standalone zip and writes `lattice-diamond-mcp-<version>-hybrid-windows-linux-x86_64.zip`. install.py picks
-the folder for the machine (the embedded Python on Windows, the standalone program on Linux). The workflow builds it
-when `installers` is `both` or `embedded`: jobs `build-embedded`, `verify-embedded`, `combine-hybrid` and
-`verify-combined-hybrid`. Not tested on Windows: nothing here has run there, including the signature check and the
-installed server; the first workflow run is the first test.
-
-### Combined-embedded: the same design on Windows and Linux
-
-The embedded design (a bundled Python with the locked packages unpacked into it, no executable of ours, no PyInstaller)
-is built for both systems and combined: `python scripts/create_export.py --combined-embedded` writes
-`lattice-diamond-mcp-<version>-embedded-windows-linux-x86_64.zip` (one `install.py`, one folder per system), and the workflow
-runs it with the `installers` input `combined-embedded` (jobs `build-embedded`, `verify-embedded`, `build-linux-embedded`,
-`verify-linux-embedded`, `combine-embedded`, `verify-combined-embedded`). The plan is to make this the only package; the
-standalone (PyInstaller) and hybrid packages stay only until it has passed CI, then they are removed in two further steps.
-
-**The Linux half** (`python scripts/build_embedded.py --platform linux`, or `create_export.py --linux-embedded`) uses the
-CPython 3.12.10 of python-build-standalone release 20250529, the build that uv 0.13.5 fetches for that version. The build
-downloads that archive itself from the pinned URL and checks it against the SHA-256 pinned in the script (taken from the release's
-`SHA256SUMS`), so it needs neither uv nor a Linux machine; python-build-standalone publishes no signature, so there is no OpenPGP
-check as on Windows. From the `install_only_stripped` archive it keeps `bin/python3.12` and the standard library and deletes the
-rest (pip, Tcl/Tk, IDLE, the test suite, headers, man pages, the shared `libpython`, which the statically linked interpreter does
-not use, and every symbolic link); the locked cp312 manylinux wheels are added with the same checks as on Windows (hashes against
-`uv.lock`, markers judged for Linux, the same packages left out). The package is about 20 MB zipped, holds three ELF files
-(the interpreter and the `pydantic_core` and `rpds` modules) and is started as `bin/python3.12 -I -m diamond_mcp`.
-
-What the build checks and stops on: the archive's SHA-256; no path outside `python/` in the archive; the interpreter present; no file
-needing a glibc newer than 2.17 (read with `objdump -T`; the highest symbol in the package is 2.17, so Red Hat 7 and newer work);
-only `bin/python3.12` in `bin/`, executable, and no symbolic links or pip; the notices in `scripts/python_notices/` belonging to
-the same python-build-standalone release (`PBS_RELEASE` against `scripts/python_notices/RELEASE`); and, on a Linux machine, that the
-finished zip installs with its own `install.py` and starts. Not "no system dependency": the interpreter links the system glibc
-(libc, libm, libpthread), which is why the floor is glibc 2.17; only musl builds are static.
-
-`install.py` handles both: it copies the `python` folder, repairs a lost execute bit on Linux, checks `bin/python3.12 -I -m
-diamond_mcp --help`, registers that command, and recognises the folder for `--uninstall`. `scripts/smoke_test.py PROGRAM
---args="-I -m diamond_mcp"` is the MCP check the workflow and `create_export.py` use for both systems.
-
-### `create_export.py`: one command for the customer package
-
-`scripts/create_export.py` is the single entry point, with the same options, file names and sidecar files as
-cortex-bridge's script of that name. It runs the existing builders (`build_embedded.py`, `build_binary.py`,
-`combine_installers.py`), so what the customer installs is what those scripts already produced.
-
-```
-python scripts/create_export.py --both                       # the hybrid package (on Linux)
-python scripts/create_export.py --windows --outdir out       # Windows half only (any system; install test needs Windows)
-python scripts/create_export.py --linux --outdir out         # Linux half only (Linux)
-python scripts/create_export.py --both --ref main --label rc1 --outdir dist/main
-python scripts/create_export.py --both --windows-zip W.zip --linux-zip L.zip     # combine halves built elsewhere
-```
-
-| | cortex-bridge | here |
+| Input | Values | Default |
 |---|---|---|
-| Required mode flag | `--online`, `--offline`, `--both` | `--windows`, `--linux`, `--both` |
-| `--outdir`, `--label`, `--no-verify`, `--allow-license-gaps` | yes | yes (same meaning) |
-| Build from a git ref | `--bridge-ref` (default `WORKTREE`) | `--ref` (default `WORKTREE`: the working tree, uncommitted changes included) |
-| `--python`, `--online-python`, `--platform` | per-Python wheel zips | not needed: the Windows package carries its own Python and the Linux program is Python-independent |
-| Sidecars beside each zip | `.sha256`, `.sbom.cdx.json`, `.buildinfo` | the same three |
-| Inside the zip | `BUILDINFO`, `MANIFEST.sha256`, licences | `BUILDINFO`, `MANIFEST.sha256` (per OS folder), licences, `LEGAL_REVIEW.txt` |
+| `ref` | branch, tag or commit to build | `main` |
+| `installers` | `both` (embedded and wheels), `combined-embedded`, `wheels` | `both` |
+| `wheels_python` | `3.11`, `3.12`, `3.13`, `all` (only for the wheels zips) | `3.11` |
 
-`MANIFEST.sha256` (`<sha256>  <path>` per file) is now written by all three builders, and `install.py` checks it before
-it installs anything: a changed or missing file stops the install and names the file. A zip without one still installs
-and says so. In a combined zip each OS folder keeps its manifest, minus the line for `install.py` (the single one at
-the top).
+| Job | What it does | Artifacts |
+|---|---|---|
+| `build-embedded` | `create_export.py --windows` on `windows-2022` (builds, install-tests and smoke-tests the Windows half) | `lattice-diamond-mcp-embedded-windows-x86_64` |
+| `verify-embedded` | installs it on a fresh Windows runner with installer Python 3.8, checks that `python.exe` is the only program, has Windows validate its signature, imports pywin32 and the server, speaks MCP, uninstalls | none |
+| `build-linux-embedded` | `create_export.py --linux` on `ubuntu-22.04` | `lattice-diamond-mcp-embedded-linux-x86_64` |
+| `verify-linux-embedded` | installs it on Ubuntu 22.04 (installer Python 3.8) and 24.04 (3.13), checks that `bin/python3.12` is the only program and that there are no links, checks that no omitted package is imported, speaks MCP, uninstalls | none |
+| `combine-embedded` | `create_export.py --both` with the two halves | `lattice-diamond-mcp-combined-embedded` (zip, `.sha256`, SBOM, `.buildinfo`) |
+| `verify-combined-embedded` | installs the combined zip on Ubuntu 22.04, Ubuntu 24.04 and Windows; `install.py` must pick the right folder and check its manifest; speaks MCP; uninstalls | none |
+| `plan`, `build-wheels`, `verify-wheels`, `combine-wheels`, `verify-combined-wheels` | the wheels zips: one per system and Python version, each installed on a fresh runner, then combined and installed again | `lattice-diamond-mcp-combined-wheels` |
 
-The Linux program of `--linux` and `--both` is a PyInstaller build and can be made only on Linux, so on Windows `--both` needs `--linux-zip`; `--linux-embedded` and `--combined-embedded` work on any system. The
-script fails when a builder reports a package without a licence text, unless `--allow-license-gaps` is given. The
-finished zips are install-tested with their own `install.py` and the installed server is started over MCP, for the
-operating system the script runs on; the other system's half is reported as not run. The `.buildinfo` file is an internal
-record (commit, parts and their hashes, uncommitted-change note) and is never shipped.
+The combine jobs run only after every per-OS zip of their kind has built and been installed on a fresh runner. Two things
+must be in the ref you build: `.github/workflows/build-dist.yml` (a `workflow_dispatch` workflow must be on the default
+branch to be started) and `uv.lock`. The combined-embedded run passed on GitHub's Windows and Ubuntu runners.
 
 ### What the installer does on the target machine
 
@@ -611,10 +458,12 @@ zip it first chooses the build: the folder for this operating system and, for wh
 Python it can find (the running interpreter's version first, then newer to older; `--python` picks the
 folder for that interpreter's version). It prints which folder it chose.
 
-- **Standalone zip:** copies the `diamond-mcp` folder into `--install-dir` (default
-  `~/diamond-mcp`) through a staging folder, so a failed copy never leaves a half-installed
-  program; restores the execute bit (some unzip tools drop it); runs `diamond-mcp --help`; and
-  registers it.
+- **Embedded zip:** copies the `python` folder into `--install-dir` (default
+  `%LOCALAPPDATA%\lattice-diamond-mcp\python` on Windows, `~/.local/share/lattice-diamond-mcp/python` on Linux)
+  through a staging folder, so a failed copy never leaves a half-installed interpreter; restores the execute bit of
+  `bin/python3.12` on Linux (some unzip tools drop it); runs `<interpreter> -I -m diamond_mcp --help`; and registers
+  that command. A zip of the retired standalone kind is refused with a pointer to the embedded package;
+  `--uninstall` still removes an earlier standalone installation (`~/diamond-mcp`) and its registration.
 - **Wheels zip:** finds the Python it was built for (searching `python3.11`, `python3`, `python`,
   and `py -3.11` on Windows, so an older default `python3` is fine), creates a virtual
   environment in `--venv-dir` (default `%LOCALAPPDATA%\lattice-diamond-mcp\venv` on Windows, `~/.local/share/lattice-diamond-mcp/venv` on Linux; earlier versions used `~/diamond-mcp-venv`, which `--uninstall` still removes), installs (with `--force-reinstall`, so a
@@ -655,15 +504,12 @@ the right kind of installation from `BUILDINFO`. Note the argument order: `claud
 
 ### Tests for the installers
 
-`tests/test_installer.py` covers the wheels route; `tests/test_binary_build.py` covers the
-standalone route. Between them: wheel and licence helpers, the glibc gate (and that the spec
-excludes `libgcc_s` and the build tools), the pins staying consistent (PyInstaller in `pyproject.toml`
-equals the lock), SBOM augmentation, pruning and validation, the bundle-versus-SBOM check, licence
-collection, `LEGAL_REVIEW.txt` (including its warning when the licence wording changes), the smoke test against the real server and against programs that misbehave (always a
-clean build failure, never a traceback), zip permissions, and the binary install, reinstall,
-refusal, dry-run, uninstall and failed-start cases against a fake `claude`. Two more tests build
-and install the real bundles; they need network access and are skipped unless
-`DIAMOND_TEST_INSTALLER=1` (wheels) or `DIAMOND_TEST_BINARY=1` (standalone, also needs uv).
+`tests/test_installer.py` covers the wheels route and the shared installer logic; `tests/test_embedded.py` and
+`tests/test_linux_embedded.py` the embedded builds and their install (signatures, OpenPGP, trimming, import tables, the
+`._pth` file, the Microsoft notice, the Linux archive, the glibc gate, layouts, the installer on both layouts, the smoke
+test against the real server and against programs that misbehave); `tests/test_create_export.py`, `tests/test_combine.py`
+and `tests/test_packaging.py` the entry point, the combining, the manifests and what spans them. One more test builds and
+installs the real wheels bundle; it needs network access and is skipped unless `DIAMOND_TEST_INSTALLER=1`.
 
 ### Updating pinned actions and dependencies
 
@@ -689,8 +535,8 @@ Nothing updates these automatically; the pins are in git and change only when so
    `uv.lock` (CI fails on a stale lock).
 2. Run `pytest`, `pytest -m integration` against a real Diamond, and the two opt-in tests above.
 3. Run the **Build dist** workflow (its combined artifacts are the packages to release), or
-   `python scripts/build_binary.py` and `python scripts/build_installer.py` on each supported system
-   and then `scripts/combine_installers.py`.
+   `python scripts/create_export.py --both --ref <tag>` (and `python scripts/build_installer.py` on each
+   supported system, then `scripts/combine_installers.py --kind wheels`, for the wheels package).
 4. Check for newer pinned actions and dependencies (see above), add the approved `LICENSE` text (see below), and review `THIRD_PARTY_LICENSES.txt` and any
    build warning about packages without a licence file.
 5. Update the revision history in the user guide.
@@ -700,28 +546,17 @@ Nothing updates these automatically; the pins are in git and change only when so
 - **The dependency set is dominated by `mcp`.** Its transitive dependencies include
   `cryptography` and `cffi` (through `pyjwt[crypto]`), which this server never loads, and
   `pydantic-core` and `rpds-py`, which it does. They make the wheels bundle platform specific,
-  and `cryptography` raises its glibc floor to 2.28. The standalone zip does not contain the two
+  and `cryptography` raises its glibc floor to 2.28. The embedded packages do not contain the ones
   that are not loaded, but `uv.lock` still pins them, so they still need tracking for security
   updates until `mcp` stops requiring them.
-- **The standalone program needs `libz.so.1` and `libgcc_s.so.1` from the system**, plus `libc`,
-  `libdl` and `libpthread`. `libgcc_s` is deliberately not bundled (see above); `libz` is linked
-  by PyInstaller's bootloader. Both were present on the Red Hat 7 and 8 hosts tested; the CI `ldd`
-  step only checks that none is missing on its own runner, so a very minimal Linux image could
-  still lack one.
-- **Verified:** standalone zip built on Red Hat 8.10, installed and run on Red Hat 7.9 (glibc 2.17)
-  with a real MCP handshake of all 32 tools, installed with that host's own Python 3.8.5, and a
-  full real Diamond 3.14.0.75.0 compile with bitstream through it inside the `bwrap` sandbox from
-  the user guide. **Not verified:** Windows, GitHub's Ubuntu runners, any non-x86-64 machine.
-  Only the Linux build host's behaviour has been observed.
-- **PyInstaller built with the host Python was rejected, and that finding stands:** a build made
-  with the Red Hat 8 system Python needs glibc 2.28 (it bundles that Python's `libpython`, `libssl`,
-  `libreadline` and others) and fails on Red Hat 7 with `GLIBC_2.28 not found`. Using uv's managed
-  Python (a python-build-standalone build against glibc 2.17) is what makes the standalone zip
-  work there.
+- **Verified:** the combined-embedded package passed the Build dist workflow on GitHub's Windows and Ubuntu
+  runners (install, signature validation on Windows, pywin32 import, MCP handshake, uninstall). The
+  Linux half was also built, installed and run on a Red Hat 8 host. **Not verified:** Red Hat 7 for the
+  embedded package (the glibc gate says it needs at most 2.17), any non-x86-64 machine.
 - **`LICENSE` is a byte-for-byte copy of cortex-bridge's AI Solutions Software License Agreement**
   (its own notice allows free distribution of the text if the copyright line is kept, and
   forbids changing the terms), and both zips contain it. A test checks that it is the unmodified
-  text, and the standalone `BUILDINFO` records its SHA-256. Whether it is the approved text for
+  text, and the embedded `BUILDINFO` records its SHA-256. Whether it is the approved text for
   this product is for Legal (`LEGAL_REVIEW.txt` says so). Section 4 of the agreement points at
   `THIRD_PARTY_LICENSES.txt`, which both zips ship. cortex-bridge also keeps a third-party licence
   review file; it has not been reproduced here, and these builds do not check dependency licences

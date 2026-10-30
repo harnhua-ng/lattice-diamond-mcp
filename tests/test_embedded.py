@@ -1,5 +1,5 @@
 """Tests for scripts/build_embedded.py (Windows package with python.org's Python), the embedded mode of
-install.py, and combining it with the Linux standalone program."""
+install.py, and combining it with the Linux embedded package."""
 
 import hashlib
 import importlib.util
@@ -503,19 +503,6 @@ def make_zip(folder, platform, kind, version="0.1.0", git="abc"):
     return path
 
 
-def test_a_windows_embedded_zip_and_a_linux_standalone_zip_become_a_hybrid_package(tmp_path):
-    (tmp_path / "in").mkdir()
-    zips = [make_zip(tmp_path / "in", "windows-x86_64", "embedded"), make_zip(tmp_path / "in", "linux-x86_64", "binary")]
-    assert combine.main(["--kind", "standalone", "--outdir", str(tmp_path / "out")] + [str(z) for z in zips]) == 0
-    target = tmp_path / "out" / "lattice-diamond-mcp-0.1.0-hybrid-windows-linux-x86_64.zip"
-    with zipfile.ZipFile(target) as archive:
-        names = set(archive.namelist())
-        index = archive.read("lattice-diamond-mcp-0.1.0/PACKAGES.txt").decode()
-    assert "lattice-diamond-mcp-0.1.0/windows-x86_64/python/python.exe" in names
-    assert "lattice-diamond-mcp-0.1.0/linux-x86_64/diamond-mcp/diamond-mcp" in names
-    assert "no program of ours" in index
-
-
 def test_an_embedded_package_for_each_system_becomes_the_combined_embedded_package(tmp_path):
     (tmp_path / "in").mkdir()
     zips = [make_zip(tmp_path / "in", "windows-x86_64", "embedded"), make_zip(tmp_path / "in", "linux-x86_64", "embedded")]
@@ -536,10 +523,10 @@ def test_two_zips_for_the_same_system_are_refused(tmp_path):
     assert combine.main(["--kind", "embedded", "--outdir", str(tmp_path / "out"), str(a), str(b)]) == 1
 
 
-def test_a_wheels_zip_still_cannot_be_combined_as_standalone(tmp_path):
+def test_a_wheels_zip_cannot_be_combined_with_an_embedded_one(tmp_path):
     (tmp_path / "in").mkdir()
     zips = [make_zip(tmp_path / "in", "windows-x86_64", "embedded"), make_zip(tmp_path / "in", "linux-x86_64", "wheels")]
-    assert combine.main(["--kind", "standalone", "--outdir", str(tmp_path / "out")] + [str(z) for z in zips]) == 1
+    assert combine.main(["--kind", "embedded", "--outdir", str(tmp_path / "out")] + [str(z) for z in zips]) == 1
 
 
 # ------------------------------------------------------------------ the list of native files

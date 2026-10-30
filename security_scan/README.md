@@ -21,7 +21,7 @@ Nothing here has been triaged by an SDLC security team, and none of it replaces 
 | `run_scans.py` | Runs the steps below, writes one JSON per step plus `summary.json`, exits non-zero if a step finds something or cannot run. |
 | (Bandit, run by `run_scans.py`) | Static analysis of `src`, `scripts` and `security_scan`. Fails on any Medium or High finding that is not suppressed. A suppression sits next to its reason in the source; a second run with `--ignore-nosec` records what the suppressions hide. Low findings are informational (almost all are "subprocess is used"). |
 | `secrets_scan.py` | Nine regular expressions over the files git tracks plus new unignored ones: private keys, AWS, GitHub, Slack, Google and API-key formats, JWTs, URLs with credentials, and key/password/token string assignments. Does not read git history. |
-| `osv_check.py` | Sends every package pinned in `uv.lock` to OSV.dev. Runtime packages (reachable from the project's own dependencies, so shipped in the installers) fail the check; build-only packages such as PyInstaller are listed and fail only with `--strict`. An unreachable OSV is an error, never a clean result. |
+| `osv_check.py` | Sends every package pinned in `uv.lock` to OSV.dev. Runtime packages (reachable from the project's own dependencies, so shipped in the installers) fail the check; build-only packages (such as pytest) are listed and fail only with `--strict`. An unreachable OSV is an error, never a clean result. |
 | `dast_parsers.py` | Seeded fuzzing (300 mutated inputs per target, plus 1 MB runs, 100,000-deep nesting and crafted worst cases) of the report parsers, the project (.ldf) reader and the config loader. A call over 2 s is "slow", over 20 s a "hang" (POSIX), any unexpected exception type a finding. With `tclsh`, also checks that `tcl_quote` always yields exactly one Tcl word equal to the original, for 320 awkward strings. |
 | `dast_stdio.py` | Starts the real server as an AI client would and speaks MCP to it over stdio: 12 malformed, mistyped and oversized frames (the server must keep answering), file-read confinement, program-path restrictions, configuration handling, DTD refusal, and a check that `--transport sse` and `streamable-http` start no listener. Runs in a scratch folder with its own HOME. `--src` points it at older code. |
 
@@ -108,7 +108,7 @@ Numbering is local to this scan. The last column names the corresponding cortex-
   that is the job of the sandbox in the user guide's deployment section.
 - **The installer zips are not signed.** A checksum beside the zip does not help against someone who can replace
   both (bridge I-1 1b and 1c). Code signing is also what Windows Defender and SmartScreen respond to.
-- **No SBOM for the wheels zip and no provenance attestation** for either zip (the standalone zip has an SBOM).
+- **No SBOM for the wheels zip and no provenance attestation** for either zip (the embedded package has an SBOM beside it).
 - **Licence notices for libraries inside the embedded Python (standalone zip): fixed 2026-10-29.** The CPython from
   python-build-standalone has OpenSSL (3.5.9 by its version string), zlib 1.3.2, expat 2.9.0, bzip2, liblzma, mpdecimal,
   libedit, ncurses, libffi, libuuid and SQLite compiled into `libpython3.12.so.1.0` (on Windows, separate DLLs beside
@@ -135,11 +135,16 @@ Numbering is local to this scan. The last column names the corresponding cortex-
   `SHA256SUMS`; **no signature is published, so there is no OpenPGP check**) with the locked wheels, no executable of ours and no symbolic
   links. Three ELF files; the highest glibc symbol is 2.17. Built here on Linux and install-tested with the real server over MCP; **never run
   on the GitHub runners**. The interpreter links the system glibc, so "no system dependency" is not true; the floor is glibc 2.17.
+- **PyInstaller and the standalone and hybrid packages removed (2026-10-30).** With the embedded packages passing CI on both
+  systems, `build_binary.py`, its spec and the PyInstaller build dependencies were deleted (uv.lock lost seven build-only
+  packages, no runtime pin changed). No unsigned launcher of ours ships any more. The installer refuses a standalone zip and
+  still uninstalls an earlier standalone installation.
 - **The wheels zip carries the `cryptography` wheel** (via the `mcp` dependency), which has OpenSSL linked in, and
-  `cffi`, which carries libffi. Their licence files are in `THIRD_PARTY_LICENSES`; the standalone program does not
+  `cffi`, which carries libffi. Their licence files are in `THIRD_PARTY_LICENSES`; the embedded packages do not
   contain either package. No wheel for `pip`, `setuptools` or an interpreter is in either zip.
-- **Linux only.** Every scan ran on Linux with Python 3.11. The Windows legs of the CI workflows have never run
-  anywhere; the symlink probe is skipped on Windows. `security-scan.yml` has never run on GitHub.
+- **Scans on Linux only.** Every scan ran on Linux with Python 3.11; the symlink probe is skipped on Windows. The embedded
+  packages passed the Build dist workflow on GitHub's Windows and Ubuntu runners (2026-10-30), but the scans themselves were
+  not run on Windows.
 - **Fuzzing is seeded, not coverage-guided**: 300 mutated inputs per target. A clean result is absence of evidence.
 - **The probes ran without a real Diamond.** They cover the server's own handling, not what Diamond does with a command.
 - `read_report`'s memory use is not measured; only that a slice of a 30 MB log is correct and fast.

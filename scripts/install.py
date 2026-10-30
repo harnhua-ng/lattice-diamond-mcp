@@ -13,14 +13,19 @@ Run it from the unpacked installer zip:
 
 Two kinds of zip use this one script; BUILDINFO says which:
 
+  embedded (built by build_embedded.py) copies a bundled Python with the packages already inside it:
+           python.org's embeddable Python on Windows, python-build-standalone's on Linux. No Python is
+           needed to RUN the result; this script only needs any Python 3.8 or later. The server is
+           started as `<folder>/python.exe -I -m diamond_mcp` (Windows) or
+           `<folder>/bin/python3.12 -I -m diamond_mcp` (Linux).
   wheels   (built by build_installer.py) installs the packages in wheels/ with pip, with no
            network, into its own virtual environment. It needs the Python version the zip was
            built for; the running interpreter may be older, in which case a suitable one is
-           looked for. No program of ours is installed: the server is started as
-           `<environment>/python -I -m diamond_mcp` (-I so that a folder the client happens to
-           run in cannot shadow a module).
-  binary   (built by build_binary.py) copies the self-contained diamond-mcp folder. No Python
-           is needed to RUN the result; this script only needs any Python 3.8 or later.
+           looked for. The server is started as `<environment>/python -I -m diamond_mcp`.
+
+No program of ours is installed by either (-I, isolated mode, so that a folder the client happens to run in
+cannot shadow a module). Earlier versions also had a standalone (PyInstaller) kind; --uninstall still finds
+and removes such an installation, but this script no longer installs one.
 
 Either kind also comes as a COMBINED zip with a build for each operating system (and, for wheels, each
 Python version) in its own folder next to this script; the installer picks the folder that fits this
@@ -57,7 +62,7 @@ OLD_DEFAULT_NAME = "diamond"  # the name earlier versions registered
 # How the wheels install starts the server, after the environment's python.
 WHEELS_SERVER_ARGS = ["-I", "-m", "diamond_mcp"]
 MANIFEST_NAME = "MANIFEST.sha256"
-SELF_CONTAINED = ("binary", "embedded")  # builds that carry their own program or interpreter; no Python is needed
+SELF_CONTAINED = ("embedded",)  # builds that carry their own interpreter; no Python is needed on the machine
 
 
 class InstallError(Exception):
@@ -494,10 +499,12 @@ def verify(venv_dir, info, dry_run):
 
 
 def default_install_dir():
+    """Where earlier versions installed the standalone (PyInstaller) program; only --uninstall still looks there."""
     return os.path.join(os.path.expanduser("~"), "diamond-mcp")
 
 
 def binary_server(install_dir):
+    """The program of an earlier standalone installation (for --uninstall and for recognising its registration)."""
     return os.path.join(install_dir, "diamond-mcp.exe" if IS_WINDOWS else "diamond-mcp")
 
 
@@ -653,27 +660,6 @@ def place_folder(args, source, install_dir, what="program", retried=False):
     return True
 
 
-def install_binary_bundle(args, info, folder=None):
-    """Copy the self-contained program folder into place and check that it starts. Returns its path."""
-    install_dir = os.path.abspath(args.install_dir or default_install_dir())
-    source = os.path.join(folder or HERE, "diamond-mcp")
-    server = binary_server(install_dir)
-    say("Installing lattice-diamond-mcp %s (self-contained; no Python is needed to run it)." % info["version"])
-    if not args.dry_run and not os.path.isfile(binary_server(source)):
-        raise InstallError("The diamond-mcp folder is missing next to install.py. Run the installer from the unpacked zip.")
-    if not place_folder(args, source, install_dir):
-        return server
-    if not IS_WINDOWS:
-        os.chmod(server, os.stat(server).st_mode | 0o755)  # some unzip tools drop the execute bit
-
-    say("Checking the installation")
-    help_run = run([server, "--help"], quiet=True)
-    if "diamond-mcp" not in help_run.stdout:
-        raise InstallError("The installed diamond-mcp program did not behave as expected.")
-    say("  OK: diamond-mcp %s" % info["version"])
-    return server
-
-
 def embedded_python(install_dir, program=None):
     """The bundled interpreter inside `install_dir`: python.exe on Windows; on Linux the `program` the build recorded
     (bin/python3.12), or else the one real python3.* file in bin/ (links and the -config helper do not count)."""
@@ -812,8 +798,8 @@ def parse_args(argv):
     parser.add_argument("--venv-dir",
                         help="Wheels zip: where to create the environment (default: %s)." % default_venv_dir())
     parser.add_argument("--install-dir",
-                        help="Standalone zip: where to install the program (default: %s; on Windows with the bundled Python: %s)."
-                             % (default_install_dir(), default_embedded_dir()))
+                        help="Embedded zip: where to install the bundled Python (default: %s). With --uninstall it may also "
+                             "name a folder of an earlier standalone installation." % default_embedded_dir())
     parser.add_argument("--python", help="Wheels zip: path to the Python interpreter to use (must match the version it was built for).")
     parser.add_argument("--no-register", action="store_true", help="Install only; do not register with Claude Code.")
     parser.add_argument("--claude-path", help="Path to the claude executable (default: found on PATH or in the VS Code extension).")
@@ -853,8 +839,9 @@ def do_install(args, info, folder=None):
             info.get("platform", "this machine"), ", Python " + info["python"] if info.get("kind") not in SELF_CONTAINED and info.get("python") else "",
             os.path.basename(folder)))
     if info.get("kind") == "binary":
-        server, server_args, replaces = install_binary_bundle(args, info, folder), [], []
-    elif info.get("kind") == "embedded":
+        raise InstallError("This zip holds the standalone (PyInstaller) program, which this installer no longer installs. "
+                           "Use the embedded package (lattice-diamond-mcp-<version>-embedded-...zip).")
+    if info.get("kind") == "embedded":
         server, server_args, replaces = install_embedded_bundle(args, info, folder), WHEELS_SERVER_ARGS, []
     else:
         server, server_args = install_wheel_bundle(args, info, folder), WHEELS_SERVER_ARGS
@@ -896,12 +883,11 @@ def uninstall_targets(args):
     try:
         kind = load_buildinfo().get("kind", "wheels")
     except InstallError:  # run from somewhere other than the unpacked zip: look at both default places
-        return [("binary", default_install_dir()), ("embedded", default_embedded_dir()),
+        return [("embedded", default_embedded_dir()), ("binary", default_install_dir()),
                 ("wheels", default_venv_dir()), ("wheels", previous_venv_dir())]
-    if kind == "binary":
-        return [("binary", default_install_dir())]
-    if kind == "embedded":
-        return [("embedded", default_embedded_dir())]
+    if kind in ("embedded", "binary"):
+        # An earlier standalone installation is the same product in its old form: remove it too when it is there.
+        return [("embedded", default_embedded_dir()), ("binary", default_install_dir())]
     return [("wheels", default_venv_dir()), ("wheels", previous_venv_dir())]
 
 

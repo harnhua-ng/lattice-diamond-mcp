@@ -31,31 +31,21 @@ combine = load("combine_installers")
 INSTALLER = b"# the installer\n"
 REQUIREMENTS = "pydantic==2.14.1 \\\n    --hash=sha256:" + "a" * 64 + "\nmcp==1.30.0 \\\n    --hash=sha256:" + "b" * 64 + "\n"
 LICENCES = "Third-party packages\n\npydantic 2.14.1  [MIT]\n    licenses/LICENSE\nmcp 1.30.0  [licence field not stated]\n"
-LINUX_SBOM = {"bomFormat": "CycloneDX", "specVersion": "1.5",
-              "components": [{"type": "library", "bom-ref": "pkg:pypi/anyio@4.15.1", "name": "anyio", "version": "4.15.1"}]}
 
 
 def fake_zip(folder, kind, platform, version="0.1.0", git="abc1234"):
-    """A stand-in for a per-OS zip written by build_embedded.py (embedded) or build_binary.py (binary)."""
-    info = {"name": "lattice-diamond-mcp", "version": version, "kind": kind, "platform": platform, "git": git}
-    if kind == "embedded":
-        info.update(python="3.12.10", python_tag="cp312", python_source="https://www.python.org/x.zip",
-                    python_sha256="c" * 64, python_pgp_fingerprint="D" * 40, python_pgp_verified=True)
-        name = "lattice-diamond-mcp-%s-embedded-%s.zip" % (version, platform)
-    else:
-        name = "lattice-diamond-mcp-%s-%s.zip" % (version, platform)
-    path = folder / name
+    """A stand-in for a per-OS zip written by build_embedded.py (`kind` is "embedded")."""
+    info = {"name": "lattice-diamond-mcp", "version": version, "kind": kind, "platform": platform, "git": git,
+            "python": "3.12.10", "python_tag": "cp312", "python_source": "https://www.python.org/x.zip",
+            "python_sha256": "c" * 64, "python_pgp_fingerprint": "D" * 40, "python_pgp_verified": True}
+    path = folder / ("lattice-diamond-mcp-%s-%s-%s.zip" % (version, kind, platform))
     root = "lattice-diamond-mcp-" + version
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(root + "/BUILDINFO", json.dumps(info))
         archive.writestr(root + "/install.py", INSTALLER)
-        if kind == "embedded":
-            archive.writestr(root + "/python/python.exe", b"x")
-            archive.writestr(root + "/requirements.txt", REQUIREMENTS)
-            archive.writestr(root + "/THIRD_PARTY_LICENSES.txt", LICENCES)
-        else:
-            archive.writestr(root + "/diamond-mcp/diamond-mcp", b"x")
-            archive.writestr(root + "/sbom.cdx.json", json.dumps(LINUX_SBOM))
+        archive.writestr(root + "/python/" + ("python.exe" if platform.startswith("windows") else "bin/python3.12"), b"x")
+        archive.writestr(root + "/requirements.txt", REQUIREMENTS)
+        archive.writestr(root + "/THIRD_PARTY_LICENSES.txt", LICENCES)
     return path
 
 
@@ -153,7 +143,7 @@ def test_a_package_without_a_licence_text_fails_the_build_unless_allowed(capsys)
 
 
 def test_a_prebuilt_zip_must_exist_and_match_its_checksum(tmp_path):
-    path = fake_zip(tmp_path, "binary", "linux-x86_64")
+    path = fake_zip(tmp_path, "embedded", "linux-x86_64")
     assert export.prebuilt(path, "--linux-zip") == path
     Path(str(path) + ".sha256").write_text("%s  x\n" % ("0" * 64))
     with pytest.raises(export.ExportError, match="does not match"):
@@ -264,16 +254,16 @@ def test_do_install_checks_the_manifest_first(tmp_path, monkeypatch):
     monkeypatch.setattr(install, "IS_WINDOWS", False)
     args = install.parse_args(["--dry-run", "--no-register", "--install-dir", str(tmp_path / "t")])
     with pytest.raises(install.InstallError, match="damaged or has been changed"):
-        install.do_install(args, {"kind": "binary", "platform": "linux-x86_64", "version": "0.1.0"}, str(folder))
+        install.do_install(args, {"kind": "embedded", "platform": "linux-x86_64", "version": "0.1.0", "program": "bin/python3.12"}, str(folder))
 
 
 def test_combining_drops_the_install_py_line_from_each_folders_manifest(tmp_path):
-    windows, linux = fake_zip(tmp_path, "embedded", "windows-x86_64"), fake_zip(tmp_path, "binary", "linux-x86_64")
+    windows, linux = fake_zip(tmp_path, "embedded", "windows-x86_64"), fake_zip(tmp_path, "embedded", "linux-x86_64")
     for path in (windows, linux):                       # give each stand-in a manifest that lists install.py, as the builders' do
         with zipfile.ZipFile(path, "a") as archive:
             archive.writestr("lattice-diamond-mcp-0.1.0/MANIFEST.sha256", "%s  install.py\n%s  BUILDINFO\n" % ("1" * 64, "2" * 64))
     out = tmp_path / "out"
-    assert combine.main(["--kind", "standalone", "--outdir", str(out), str(windows), str(linux)]) == 0
+    assert combine.main(["--kind", "embedded", "--outdir", str(out), str(windows), str(linux)]) == 0
     with zipfile.ZipFile(next(out.glob("*.zip"))) as archive:
         for folder in ("windows-x86_64", "linux-x86_64"):
             text = archive.read("lattice-diamond-mcp-0.1.0/%s/MANIFEST.sha256" % folder).decode()

@@ -27,12 +27,13 @@ install = load("install")
 INSTALLER = b"# the installer\n"
 
 
-def make_zip(folder, platform, kind="binary", python_tag=None, python="3.11", version="0.1.0", git="abc1234",
+def make_zip(folder, platform, kind="embedded", python_tag=None, python="3.11", version="0.1.0", git="abc1234",
              installer=INSTALLER, root=None):
-    """A stand-in for one per-platform zip written by build_binary.py or build_installer.py."""
+    """A stand-in for one per-platform zip written by build_embedded.py or build_installer.py."""
     info = {"name": "lattice-diamond-mcp", "version": version, "kind": kind, "platform": platform, "git": git}
-    if kind == "binary":
-        name = "lattice-diamond-mcp-%s-%s.zip" % (version, platform)
+    if kind == "embedded":
+        info.update(python="3.12.10", python_tag="cp312")
+        name = "lattice-diamond-mcp-%s-embedded-%s.zip" % (version, platform)
     else:
         info.update(python=python, python_tag=python_tag or "cp" + python.replace(".", ""), min_glibc="2.28" if platform.startswith("linux") else None)
         name = "lattice-diamond-mcp-%s-%s-%s.zip" % (version, info["python_tag"], platform)
@@ -47,9 +48,9 @@ def make_zip(folder, platform, kind="binary", python_tag=None, python="3.11", ve
         add("BUILDINFO", json.dumps(info) + "\n")
         add("install.py", installer, 0o755)
         add("LICENSE", "licence text\n")
-        if kind == "binary":
-            add("diamond-mcp/diamond-mcp" + (".exe" if platform.startswith("windows") else ""), b"\x7fELF" + platform.encode(), 0o755)
-            add("diamond-mcp/_internal/lib.so", b"library " + platform.encode())
+        if kind == "embedded":
+            add("python/" + ("python.exe" if platform.startswith("windows") else "bin/python3.12"), b"\x7fELF" + platform.encode(), 0o755)
+            add("python/lib/module.so", b"library " + platform.encode())
         else:
             add("requirements.txt", "pkg==1 --hash=sha256:00\n")
             add("wheels/pkg-1-py3-none-any.whl", b"wheel " + platform.encode())
@@ -70,23 +71,23 @@ def names(path):
 
 # ------------------------------------------------------------------ combining
 
-def test_standalone_zips_become_one_zip_with_a_folder_per_platform(inputs, tmp_path):
+def test_embedded_zips_become_one_zip_with_a_folder_per_platform(inputs, tmp_path):
     zips = [make_zip(inputs, "windows-x86_64"), make_zip(inputs, "linux-x86_64")]
     out = tmp_path / "out"
-    assert combine.main(["--kind", "standalone", "--outdir", str(out)] + [str(z) for z in zips]) == 0
-    target = out / "lattice-diamond-mcp-0.1.0-standalone-windows-linux-x86_64.zip"
+    assert combine.main(["--kind", "embedded", "--outdir", str(out)] + [str(z) for z in zips]) == 0
+    target = out / "lattice-diamond-mcp-0.1.0-embedded-windows-linux-x86_64.zip"
     root = "lattice-diamond-mcp-0.1.0/"
     assert names(target) == sorted(root + n for n in [
         "install.py", "PACKAGES.txt",
-        "linux-x86_64/BUILDINFO", "linux-x86_64/LICENSE", "linux-x86_64/diamond-mcp/diamond-mcp",
-        "linux-x86_64/diamond-mcp/_internal/lib.so",
-        "windows-x86_64/BUILDINFO", "windows-x86_64/LICENSE", "windows-x86_64/diamond-mcp/diamond-mcp.exe",
-        "windows-x86_64/diamond-mcp/_internal/lib.so"])
+        "linux-x86_64/BUILDINFO", "linux-x86_64/LICENSE", "linux-x86_64/python/bin/python3.12",
+        "linux-x86_64/python/lib/module.so",
+        "windows-x86_64/BUILDINFO", "windows-x86_64/LICENSE", "windows-x86_64/python/python.exe",
+        "windows-x86_64/python/lib/module.so"])
 
 
 def test_the_contents_of_each_build_are_unchanged_and_permissions_survive(inputs, tmp_path):
     zips = [make_zip(inputs, "windows-x86_64"), make_zip(inputs, "linux-x86_64")]
-    combine.main(["--kind", "standalone", "--outdir", str(tmp_path), str(zips[0]), str(zips[1])])
+    combine.main(["--kind", "embedded", "--outdir", str(tmp_path), str(zips[0]), str(zips[1])])
     target = next(tmp_path.glob("*.zip"))
     with zipfile.ZipFile(target) as combined, zipfile.ZipFile(zips[1]) as original:
         root = "lattice-diamond-mcp-0.1.0/"
@@ -96,7 +97,7 @@ def test_the_contents_of_each_build_are_unchanged_and_permissions_survive(inputs
             moved = combined.getinfo(root + "linux-x86_64/" + member.filename.split("/", 1)[1])
             assert combined.read(moved) == original.read(member)
             assert moved.external_attr == member.external_attr and moved.date_time == member.date_time
-        program = combined.getinfo(root + "linux-x86_64/diamond-mcp/diamond-mcp")
+        program = combined.getinfo(root + "linux-x86_64/python/bin/python3.12")
         assert stat.S_IMODE(program.external_attr >> 16) == 0o755
         assert stat.S_IMODE(combined.getinfo(root + "install.py").external_attr >> 16) == 0o755
         assert combined.read(root + "install.py") == INSTALLER
@@ -104,7 +105,7 @@ def test_the_contents_of_each_build_are_unchanged_and_permissions_survive(inputs
 
 def test_the_checksum_file_is_in_sha256sum_format_with_unix_line_ends(inputs, tmp_path):
     zips = [make_zip(inputs, "windows-x86_64"), make_zip(inputs, "linux-x86_64")]
-    combine.main(["--kind", "standalone", "--outdir", str(tmp_path), str(zips[0]), str(zips[1])])
+    combine.main(["--kind", "embedded", "--outdir", str(tmp_path), str(zips[0]), str(zips[1])])
     target = next(tmp_path.glob("*.zip"))
     raw = (tmp_path / (target.name + ".sha256")).read_bytes()
     assert raw == ("%s  %s\n" % (hashlib.sha256(target.read_bytes()).hexdigest(), target.name)).encode()
@@ -129,7 +130,7 @@ def refuse(tmp_path, kind, zips, message):
 
 
 def test_a_missing_operating_system_is_refused(inputs, tmp_path, capsys):
-    refuse(tmp_path, "standalone", [make_zip(inputs, "linux-x86_64")], "")
+    refuse(tmp_path, "embedded", [make_zip(inputs, "linux-x86_64")], "")
     assert "Nothing for windows" in capsys.readouterr().err
 
 
@@ -137,18 +138,18 @@ def test_a_missing_operating_system_is_refused(inputs, tmp_path, capsys):
 def test_builds_of_different_versions_or_commits_are_refused(inputs, tmp_path, capsys, field, other):
     first = make_zip(inputs, "linux-x86_64")
     second = make_zip(inputs, "windows-x86_64", **other)
-    refuse(tmp_path, "standalone", [first, second], "")
+    refuse(tmp_path, "embedded", [first, second], "")
     assert "differ in " + field in capsys.readouterr().err
 
 
 def test_different_installers_are_refused(inputs, tmp_path, capsys):
-    refuse(tmp_path, "standalone", [make_zip(inputs, "linux-x86_64"), make_zip(inputs, "windows-x86_64", installer=b"# other\n")], "")
+    refuse(tmp_path, "embedded", [make_zip(inputs, "linux-x86_64"), make_zip(inputs, "windows-x86_64", installer=b"# other\n")], "")
     assert "different install.py" in capsys.readouterr().err
 
 
 def test_installers_that_differ_only_in_line_endings_are_explained(inputs, tmp_path, capsys):
     """What happened in CI: the Windows checkout converted install.py to CRLF."""
-    refuse(tmp_path, "standalone", [make_zip(inputs, "linux-x86_64", installer=b"# one\n# two\n"),
+    refuse(tmp_path, "embedded", [make_zip(inputs, "linux-x86_64", installer=b"# one\n# two\n"),
                                     make_zip(inputs, "windows-x86_64", installer=b"# one\r\n# two\r\n")], "")
     err = capsys.readouterr().err
     assert "differ only in line endings" in err and ".gitattributes" in err and "SHA-256" in err
@@ -165,30 +166,30 @@ def test_the_same_build_twice_is_refused(inputs, tmp_path, capsys):
     first = make_zip(inputs, "linux-x86_64")
     copy = inputs / "copy.zip"
     copy.write_bytes(first.read_bytes())
-    refuse(tmp_path, "standalone", [first, copy, make_zip(inputs, "windows-x86_64")], "")
+    refuse(tmp_path, "embedded", [first, copy, make_zip(inputs, "windows-x86_64")], "")
     assert "both the build for linux-x86_64" in capsys.readouterr().err
 
 
 def test_the_wrong_kind_is_refused(inputs, tmp_path, capsys):
     refuse(tmp_path, "wheels", [make_zip(inputs, "linux-x86_64"), make_zip(inputs, "windows-x86_64")], "")
-    assert "is a standalone zip, not a wheels zip" in capsys.readouterr().err
+    assert "is an embedded zip, not a wheels zip" in capsys.readouterr().err
 
 
 def test_things_that_are_not_installer_zips_are_refused(inputs, tmp_path, capsys):
     broken = inputs / "broken.zip"
     broken.write_bytes(b"not a zip")
-    refuse(tmp_path, "standalone", [broken], "")
+    refuse(tmp_path, "embedded", [broken], "")
     assert "not a readable zip" in capsys.readouterr().err
     other = inputs / "other.zip"
     with zipfile.ZipFile(other, "w") as archive:
         archive.writestr("root/readme.txt", "x")
-    refuse(tmp_path, "standalone", [other], "")
+    refuse(tmp_path, "embedded", [other], "")
     assert "no BUILDINFO" in capsys.readouterr().err
     two_roots = inputs / "two.zip"
     with zipfile.ZipFile(two_roots, "w") as archive:
         archive.writestr("a/BUILDINFO", "{}")
         archive.writestr("b/BUILDINFO", "{}")
-    refuse(tmp_path, "standalone", [two_roots], "")
+    refuse(tmp_path, "embedded", [two_roots], "")
     assert "exactly one top-level folder" in capsys.readouterr().err
 
 
@@ -202,8 +203,9 @@ def lay_out(tmp_path, builds):
     return tmp_path
 
 
-def binary(platform):
-    return {"kind": "binary", "platform": platform, "version": "0.1.0"}
+def embedded(platform):
+    return {"kind": "embedded", "platform": platform, "version": "0.1.0", "python": "3.12.10",
+            "program": None if platform.startswith("windows") else "bin/python3.12"}
 
 
 def wheels(platform, python):
@@ -217,21 +219,21 @@ def here(tmp_path, monkeypatch):
 
 
 def test_a_single_platform_zip_is_used_as_it_always_was(here):
-    (here / "BUILDINFO").write_text(json.dumps(binary("linux-x86_64")))
+    (here / "BUILDINFO").write_text(json.dumps(embedded("linux-x86_64")))
     folder, info = install.select_bundle()
     assert folder == str(here) and info["platform"] == "linux-x86_64"
 
 
 @pytest.mark.parametrize("on_windows, expected", [(False, "linux-x86_64"), (True, "windows-x86_64")])
-def test_a_combined_standalone_zip_gives_the_build_for_this_system(here, monkeypatch, on_windows, expected):
-    lay_out(here, {"windows-x86_64": binary("windows-x86_64"), "linux-x86_64": binary("linux-x86_64")})
+def test_a_combined_embedded_zip_gives_the_build_for_this_system(here, monkeypatch, on_windows, expected):
+    lay_out(here, {"windows-x86_64": embedded("windows-x86_64"), "linux-x86_64": embedded("linux-x86_64")})
     monkeypatch.setattr(install, "IS_WINDOWS", on_windows)
     folder, info = install.select_bundle()
     assert Path(folder).name == expected and info["platform"] == expected
 
 
 def test_a_zip_with_only_other_systems_is_refused_clearly(here, monkeypatch):
-    lay_out(here, {"windows-x86_64": binary("windows-x86_64")})
+    lay_out(here, {"windows-x86_64": embedded("windows-x86_64")})
     monkeypatch.setattr(install, "IS_WINDOWS", False)
     with pytest.raises(install.InstallError, match="holds builds for windows-x86_64 but this machine is linux"):
         install.select_bundle()
@@ -288,10 +290,10 @@ def test_an_explicit_python_picks_the_matching_build(here, monkeypatch):
 
 
 def test_a_dry_run_from_a_combined_zip_names_the_build_it_chose(here, monkeypatch, capsys, tmp_path):
-    lay_out(here, {"windows-x86_64": binary("windows-x86_64"), "linux-x86_64": binary("linux-x86_64")})
+    lay_out(here, {"windows-x86_64": embedded("windows-x86_64"), "linux-x86_64": embedded("linux-x86_64")})
     monkeypatch.setattr(install, "IS_WINDOWS", False)
     target = tmp_path / "installed"
     assert install.main(["--dry-run", "--no-register", "--install-dir", str(target)]) == 0
     out = capsys.readouterr().out
     assert "several builds; using the one for linux-x86_64" in out and "[dry run] copy" in out
-    assert str(here / "linux-x86_64" / "diamond-mcp") in out and not target.exists()
+    assert str(here / "linux-x86_64" / "python") in out and not target.exists()
